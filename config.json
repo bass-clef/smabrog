@@ -1,0 +1,142 @@
+[
+    {
+        "capture": {
+            "title": "",
+            "title_back": "MonsterX U3.0R",
+            "width": 0,
+            "height": 0,
+            "x": 45,
+            "y": 559
+        },
+        "log": {
+            "headers": {
+                "Content-Type": "application/json"
+            },
+            "name": "{now}.json",
+            "path": "log/{file_name}",
+            "path_back": "https://httpbin.org/post"
+        },
+        "option": {
+            "battle_information": {
+                "back": [
+                    0,
+                    0,
+                    0
+                ],
+                "caption": "battle_information",
+                "color": [
+                    255,
+                    255,
+                    255
+                ],
+                "cui_text": "\r{frame}({ratio})<{group_name}> {player_info} {battle_rate} {streak} {streak_ratio[0][win]}/{streak_ratio[0][lose]}",
+                "gui": {
+                    "height": 360,
+                    "width": 640
+                },
+                "gui_text": "{streak_name} {streak}\n10rate {streak_ratio[0][win]}%/{streak_ratio[0][lose]}%\n\n{frame}({ratio})",
+                "pos": [
+                    0,
+                    0
+                ],
+                "tickness": 1
+            },
+            "battle_informationCUI": true,
+            "battle_informationGUI": true,
+            "battle_streak_ratio_max": [
+                50,
+                10
+            ],
+            "online_rule": true,
+            "exit_not_found_capture": false,
+            "find_capture_area": true,
+            "found_capture_area_fixed": false,
+            "every_time_find_capture_area": true
+        },
+        "resource": {
+            "character": {
+                "BANJOKAZOOIE": "バンジョー＆カズーイ",
+                "BAYONETTA": "ベヨネッタ",
+                "BLACKPIT": "ブラックピット",
+                "BYLETH": "ベレト/ベレス",
+                "CAPTAINFALCON": "キャプテンファルコン",
+                "CHROM": "クロム",
+                "CLOUD": "クラウド",
+                "DAISY": "デイジー",
+                "DARKSAMUS": "ダークサムス",
+                "DEDEDE": "デデデ",
+                "DIDDYKONG": "ディディーコング",
+                "DONKEYKONG": "ドンキーコング",
+                "DRMARIO": "ドクターマリオ",
+                "DUCKHUNT": "ダックハント",
+                "FALCO": "ファルコ",
+                "FOX": "フォックス",
+                "GANONDORF": "ガノンドロフ",
+                "GAOGAEN": "ガオガエン",
+                "GEKKOUGA": "ゲッコウガ",
+                "HERO": "勇者",
+                "ICECLIMBER": "アイスクライマー",
+                "IKE": "アイク",
+                "INKLING": "インクリング",
+                "JOKER": "ジョーカー",
+                "KAMUI": "カムイ",
+                "KEN": "ケン",
+                "KINGKROOL": "キングクルール",
+                "KIRBY": "カービィ",
+                "KOOPA": "クッパ",
+                "KOOPAJR": "クッパJr",
+                "LEMMY": "レミー",
+                "LINK": "リンク",
+                "LITTLEMAC": "リトルマック",
+                "LUCARIO": "ルカリオ",
+                "LUCAS": "リュカ",
+                "LUCINA": "ルキナ",
+                "LUIGI": "ルイージ",
+                "MARIO": "マリオ",
+                "MARTH": "マルス",
+                "METAKNIGHT": "メタナイト",
+                "MEWTWO": "ミュウツー",
+                "MIIBRAWLER": "Miiブラウラー",
+                "MIIGUNNER": "Miiガンナー",
+                "MIISWORDFIGHTER": "Miiソードファイター",
+                "MRGAMEWATCH": "Mr.ゲーム&ウォッチ",
+                "MURABITO": "むらびと",
+                "NESS": "ネス",
+                "OLIMAR": "ピクミンオリマー",
+                "PACKUNFLOWER": "パックンフラワー",
+                "PACMAN": "パックマン",
+                "PALUTENA": "パルテナ",
+                "PEACH": "ピーチ",
+                "PICHU": "ピチュー",
+                "PIKACHU": "ピカチュウ",
+                "PIT": "ピット",
+                "POKEMONTRAINER": "ポケモントレーナー",
+                "PURIN": "プリン",
+                "REFLET": "ルフレ",
+                "RICHTER": "リヒター",
+                "RIDLEY": "リドリー",
+                "ROBOT": "ロボット",
+                "ROCKMAN": "ロックマン",
+                "ROSETTACHIKO": "ロゼッタチコ",
+                "ROY": "ロイ",
+                "RYU": "リュウ",
+                "SAMUS": "サムス",
+                "SHEIK": "シーク",
+                "SHIZUE": "しずえ",
+                "SHULK": "シュルク",
+                "SIMON": "シモン",
+                "SNAKE": "スネーク",
+                "SONIC": "ソニック",
+                "TERRY": "テリー",
+                "TOONLINK": "トゥーンリンク",
+                "WARIO": "ワリオ",
+                "WIIFITTRAINER": "WiiFitトレーナー",
+                "WOLF": "ウルフ",
+                "YOSHI": "ヨッシー",
+                "YOUNGLINK": "こどもリンク",
+                "ZELDA": "ゼルダ",
+                "ZEROSUITSAMUS": "ゼロスーツサムス"
+            }
+        }
+    }
+]
