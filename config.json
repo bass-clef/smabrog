@@ -5,8 +5,8 @@
             "title_back": "MonsterX U3.0R",
             "width": 0,
             "height": 0,
-            "x": 45,
-            "y": 559
+            "x": 74,
+            "y": 546
         },
         "log": {
             "headers": {
@@ -18,33 +18,32 @@
         },
         "option": {
             "battle_information": {
+                "caption": "battle_information",
                 "back": [
                     0,
                     0,
                     0
                 ],
-                "caption": "battle_information",
                 "color": [
                     255,
                     255,
                     255
                 ],
-                "cui_text": "\r{frame}({ratio})<{group_name}> {player_info} {battle_rate} {streak} {streak_ratio[0][win]}/{streak_ratio[0][lose]}",
+                "cui_text": "\r<{group_name}> {player_info} {battle_rate}",
                 "gui": {
                     "height": 360,
                     "width": 640
                 },
-                "gui_text": "{streak_name} {streak}\n10rate {streak_ratio[0][win]}%/{streak_ratio[0][lose]}%\n\n{frame}({ratio})",
+                "gui_text": "{streak_name} {streak}\n{streak_ratio[0][length]}戦中 勝:{streak_ratio[0][win]}% 負:{streak_ratio[0][lose]}%                    ({ratio}){frame}",
                 "pos": [
                     0,
-                    0
-                ],
-                "tickness": 1
+                    320
+                ]
             },
             "battle_informationCUI": true,
             "battle_informationGUI": true,
+            "battle_information_animation": true,
             "battle_streak_ratio_max": [
-                50,
                 10
             ],
             "online_rule": true,

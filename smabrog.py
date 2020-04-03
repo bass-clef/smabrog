@@ -11,19 +11,23 @@ from ctypes import *
 from ctypes.wintypes import *
 import datetime
 from collections import defaultdict
+import concurrent.futures
 import difflib
 from enum import IntEnum
 from forbiddenfruit import curse
-from PIL import Image, ImageGrab
+from PIL import Image, ImageDraw, ImageFont, ImageGrab
+import japanize_matplotlib
 import json
 import logging
 import matplotlib
+import matplotlib.pyplot as plt
 import numpy
 from collections import OrderedDict
 import os
 from pathlib import Path
 import pyocr
 import pyocr.builders
+import random
 import re
 import sys
 import time
@@ -94,8 +98,8 @@ class Utils:
 				word_height = max(word_height, y+h)
 		result_image = image[max(word_y-margin, 0):min(word_height+margin, height), max(word_x-margin, 0):min(word_width+margin, width)]
 		if ( any([shape == 0 for shape in result_image.shape]) ):
-			return image
-		return result_image
+			return image, (word_x, word_y, word_width, word_height)
+		return result_image, (word_x, word_y, word_width, word_height)
 
 	# image と color_image をマッチングテンプレートで比較して一番確率が高い 確率,座標 を返す
 	# @param Image mask_image		指定した場合は image を事前にマスク処理する
@@ -139,14 +143,6 @@ class Utils:
 		if (not logger_func is None):
 			logger_func(message)
 
-	# putTextさんへ。なんで改行コード反映してくれないの???
-	def draw_text_line(image, texts, pos=(0,0), thickness=2, color=(0,0,0), font_scale=1.0, line_margin=3):
-		texts = texts.split('\n') if type(texts) == str else texts
-		for lines, text in enumerate(texts):
-			size, ymin = cv2.getTextSize(text, cv2.FONT_HERSHEY_DUPLEX, font_scale, thickness)
-			cv2.putText(image, text, (pos[0], pos[1] + (lines+1)*(size[1]+ymin+line_margin)), cv2.FONT_HERSHEY_DUPLEX,
-				font_scale, color, thickness, cv2.LINE_AA)
-
 class FrameState(IntEnum):
 	FS_UNKNOWN = 0
 	FS_READY_TO_FIGHT = 1
@@ -155,7 +151,8 @@ class FrameState(IntEnum):
 	FS_BATTLE = 4
 	FS_BATTLE_END = 5
 	FS_RESULT = 6
-	FS_LOADING = 7
+	FS_RETRY = 7
+	FS_LOADING = 8
 
 class SmaBroEngine:
 	def __init__(self):
@@ -191,9 +188,16 @@ class SmaBroEngine:
 		self.back_power = 0
 		self.battle_streak_rate = 0	# 正数で連勝数,負数で連敗数
 		self.battle_history = []
+		self.power_history = []
+		self.power_limit = { 'min':-1, 'max':-1 }
+		self.battle_streak_ratio = [{}]
 		#self.time_zero = datetime.datetime(1900, 1, 1, 0, 0)
+		self.animation_count = 0
+		self.animation_calc = 0
+		self.animation_image = None
+		self.gui_info = None
 
-		# 画像リソース
+		# 解析に必要な画像リソース
 		self.ready_to_fight_mask = cv2.imread(+'resource/ready_to_fight_mask.png', cv2.IMREAD_UNCHANGED)
 		self.ready_to_fight_color = list(range(2))
 		for i in range(2):
@@ -215,7 +219,7 @@ class SmaBroEngine:
 		self.rule_smash_color = cv2.imread(+'resource/rule_smash_color.png')
 		self.rule_smash_or_team_mask = cv2.imread(+'resource/rule_smash_or_team_mask.png')
 
-		self.battle_time_zero_mask = cv2.imread(+'resource/battle_time_zero_mask.png')
+		self.battle_time_zero_mask = cv2.imread(+'resource/battle_time_zero_mask.png', cv2.IMREAD_UNCHANGED)
 		self.battle_time_zero_color = cv2.imread(+'resource/battle_time_zero_color.png')
 		self.battle_time_mask = cv2.imread(+'resource/battle_time_mask.png', cv2.IMREAD_GRAYSCALE)
 
@@ -252,6 +256,13 @@ class SmaBroEngine:
 
 		self.battle_retry_mask = cv2.imread(+'resource/battle_retry_mask.png')
 		self.battle_retry_color = cv2.imread(+'resource/battle_retry_color.png')
+
+		#その他の画像リソース
+		self.smabro_icon = cv2.imread(+'resource/smabro_icon.png', cv2.IMREAD_UNCHANGED)
+
+		# フォント
+		self.font = ImageFont.truetype('C:/Windows/Fonts/msgothic.ttc', 20)
+		self.small_font = ImageFont.truetype('C:/Windows/Fonts/msgothic.ttc', 14)
 
 	# 初期化後起動のみ
 	def _load_first_only(self):
@@ -312,9 +323,6 @@ class SmaBroEngine:
 					ready_to_fight_trans_mask, is_trans=True)
 				capture_area_image = convert_image[ pos[1]:int(pos[1]+self.resource_size['height']), pos[0]:int(pos[0]+self.resource_size['width']) ]
 				is_ready_frame = self._is_ready_frame(capture_area_image)
-				cv2.rectangle(convert_image,
-					(pos[0], pos[1], self.resource_size['width'], self.resource_size['height']),
-					255 if is_ready_frame else (0, 0, 255), 1)
 				if ( not is_ready_frame ):
 					continue
 
@@ -330,7 +338,7 @@ class SmaBroEngine:
 						if ( self._is_ready_frame(capture_area_image) ):
 							p_ratio[tuple([add_x, add_y])] = self.ratio
 
-				p, ratio = max( p_ratio.items(), key=lambda x:[1] )
+				p, ratio = max( p_ratio.items(), key=lambda x:x[1] )
 				x = int(pos[0] * width_magnification) + p[0]
 				y = int(pos[1] * height_magnification) + p[1]
 				self.ratio = ratio
@@ -338,6 +346,7 @@ class SmaBroEngine:
 				self.config['capture']['y'] = y
 				if (self.config['option']['found_capture_area_fixed']):
 					self.config['option']['find_capture_area'] = False
+					cv2.rectangle(convert_image, (x+1, y+1, width, height), 255, 1)
 					cv2.imwrite('found_capture_area_fixed.png', convert_image)
 				self.logger.info('found capture area {0}x{1}'.format(self.config['capture']['x'], self.config['capture']['y']))
 				break
@@ -350,6 +359,7 @@ class SmaBroEngine:
 					self.config['option']['found_capture_area_fixed'] = True
 				if (self.config['option']['exit_not_found_capture']):
 					sys.exit(0)
+
 
 	# タイトルからウィンドウを捕捉 (これより, _init_capture_window ぶん回したほうが早いｗｗｗ おまけ程度)
 	def _capture_window_title(self, title):
@@ -378,6 +388,224 @@ class SmaBroEngine:
 		capture_image = cv2.resize(capture_image, dsize=(self.resource_size['width'], self.resource_size['height']))
 		return capture_image
 
+	# 結果画面が正常に捕捉できなかった場合の救済措置
+	def _research_battle_result(self):
+		# 	順位を -1 から N に変更
+		order_remain = [ (player+1) for player in range(self.player_count) if not (player+1) in self.player_order ]
+		if (1 < len(order_remain)):
+			# わからない順位が複数ある
+			Utils.width_full_print(f"can't found player order's for {order_remain}", logger_func=self.logger.info)
+			return
+		if (0 == len(order_remain)):
+			# 正常なのでなにもしない
+			self.logger.debug(f'player order no anything changed. {self.player_order}')
+			return
+
+		min_order = min(self.player_order)
+		if (all([ min_order == order for order in self.player_order ])):
+			# 全プレイヤーが同じ順位 (正常なストックから推測)
+			if ('stock' == self.rule_name):
+				lowest = int(numpy.argmax(self.player_order))
+				highest = int(numpy.argmin(self.player_order))
+			elif ('time' == self.rule_name):
+				pass
+		else:
+			# かけている順位が一つ (他の順位から推測)
+			player = int(numpy.argmin(self.player_order))
+			self.player_order[player] = order_remain[0]
+			self.logger.debug(f'player order changed. {player} -> {order_remain[0]}th')
+
+	# 1pプレイヤー目線のキャラ別勝敗数を蓄える
+	def _store_battle_rate(self, chara_name, win=0, lose=0):
+		win = win + 0
+		lose = lose + 0
+		key = tuple(chara_name)
+		if ( not key in self.battle_rate ):
+			self.battle_rate[key] = { 'win':0, 'lose':0 }
+
+		self.battle_rate[key]['win'] += win
+		self.battle_rate[key]['lose'] += lose
+		
+		plus = 1 if 0 < win else -1 if 0 < lose else 0
+		if (0 == plus):
+			return
+
+		if ( abs(self.battle_streak_rate + plus) < abs(self.battle_streak_rate) ):
+			# 計算後の値が現在の絶対値より小さくなる場合 連hoge が切れたことになるのでリセットする
+			self.battle_streak_rate = 0
+		self.battle_streak_rate += plus
+		self.battle_history.append(plus)
+
+		if (10000 < self.power[0]):
+			# ごめん 1万以下は人権ないかも… (誤検出を省く)
+			self.power_history.append( [len(self.battle_history), self.power[0]] )
+
+		if ( 2 < len(self.battle_history) ):
+			# N戦の勝率
+			battle_streak_ratio_max = self.config['option']['battle_streak_ratio_max']
+			self.battle_streak_ratio = [{'win':0.0, 'lose':0.0, 'length':0} for _ in battle_streak_ratio_max]
+			total_count = len(self.battle_history)
+			if (0 < total_count):
+				self.battle_history = self.battle_history[::-1]
+				for key, battle_max in enumerate(battle_streak_ratio_max):
+					count = min(total_count, len(self.battle_history[0:battle_max]) )
+					win_count = lose_count = 0
+					for result in self.battle_history[0:count]:
+						win_count += 1 if 0 < result else 0
+						lose_count += 1 if result < 0 else 0
+
+					self.battle_streak_ratio[key]['win'] = round(win_count / count * 100.0, 1)
+					self.battle_streak_ratio[key]['lose'] = round(lose_count / count * 100.0, 1)
+					self.battle_streak_ratio[key]['length'] = count
+
+				self.battle_history = self.battle_history[::-1]
+
+	# 勝敗の保存 (stock戦)
+	def _stock_rate(self):
+		if ( all([-1 == player for player in self.result_stock['count']]) ):
+			# ストック数が1
+			self.result_stock = { 'count':[1]*self.player_count, 'max':[1]*self.player_count }
+
+		lowest = int(numpy.argmax(self.player_order))
+		highest = int(numpy.argmin(self.player_order))
+		lowest_order = self.player_order[lowest]
+		highest_order = self.player_order[highest]
+		if ( self.result_stock['count'][lowest] == self.result_stock['count'][highest] ):
+			# サドンデスなどでストック数が同じになる場合があるので、負けたほうをひとつ減算
+			for player in numpy.where( self.player_order == lowest_order )[0]:
+				# team サドンデス用に where match
+				self.result_stock['count'][player] -= 1
+
+		# 順位に基づいてストック数を再計算
+		highest_count = lowest_count = 0
+		for player in numpy.where( self.player_order == highest_order )[0]:
+			highest_count += self.result_stock['count'][player]
+		for player in numpy.where( self.player_order == lowest_order )[0]:
+			lowest_count += self.result_stock['count'][player]
+		if ( highest_count < lowest_count ):
+			# ストックの合計において,勝っている方 < 負けている方 の場合,検出エラーとして扱い,順位に基づいてストック数の最大を 1 として算出する
+			for player in numpy.where( self.player_order == lowest_order )[0]:
+				self.result_stock['count'][player] = 0
+				self.result_stock['max'][player] = 1
+			for player in numpy.where( self.player_order == highest_order )[0]:
+				self.result_stock['count'][player] = 1
+				self.result_stock['max'][player] = 1
+			self.logger.debug(f'stock recalc {self.result_stock}')
+
+		self._store_battle_rate( self.chara_name,
+			self.player_order[0] == highest_order,
+			self.player_order[0] == lowest_order)
+
+	# 勝敗の保存 (time戦)
+	def _time_rate(self):
+		# 順位に基づいてポイントを再計算
+		lowest = int(numpy.argmax(self.player_order))
+		highest = int(numpy.argmin(self.player_order))
+		lowest_order = self.player_order[lowest]
+		highest_order = self.player_order[highest]
+		highest_point = lowest_point = 0
+		for player in self.player_order:
+			point = self.result_stock['max'][player] - self.result_stock['count'][player]
+			if (lowest == player):
+				lowest_point = point
+			elif (highest == player):
+				highest_point = point
+
+		if ( highest_point < lowest_point ):
+			# 撃墜数 - 落下数 において,勝っている方 < 負けている方 の場合,検出エラーとして扱い,順位に基づいてポイントの最大を player_count として算出する
+			# time戦に関しては result_stock の内容が count=落下数 max=撃墜数 となっている
+			max_point = self.player_count - len( list(numpy.where(self.player_order == highest)) ) + 1
+			max_point = max_point if max_point == self.player_count else max_point - 1
+			for player, order in enumerate(self.player_order):
+				self.result_stock['count'][player] = order - 1
+				self.result_stock['max'][player] = (max_point - order)
+			"""
+			o: count, max
+			1: 1-1=0, 4-1=3
+			2: 2-1=1, 4-2=2
+			3: 3-1=2, 4-3=1
+			4: 4-1=3, 4-4=0
+
+			1: 1-1=0, 2-1=1
+			1: 1-1=0, 2-1=1
+			2: 2-1=1, 2-2=0
+			2: 2-1=1, 2-2=0
+			"""
+
+		self._store_battle_rate( self.chara_name,
+			self.player_order[-1] > self.player_order[0],
+			self.player_order[-1] < self.player_order[0] )
+
+	# 戦歴の読込
+	def _load_history(self):
+		po = Path('./log/')
+		history_pattern = self.config['log']['name'].format(now=r'\d+', chara=r'\S+')
+		dirlist = [file for file in po.glob('*.json') if re.search(history_pattern, str(file))]
+		for history_file in dirlist:
+			Utils.width_full_print(f'\r{history_file}')
+			with open(history_file) as f:
+				try:
+					history_file = json.load(f)
+					player_info = history_file['player']
+				except json.decoder.JSONDecodeError:
+					# 空 or json が正しくないものは無視する
+					continue
+
+			self.power = [ player_info[0]['power'], player_info[1]['power'] ]
+			# キャラ別戦歴
+			self._store_battle_rate( [player['name'] for player in player_info[0:] ],
+				player_info[-1]['order'] > player_info[0]['order'],
+				player_info[-1]['order'] < player_info[0]['order'] )
+
+		self.battle_streak_rate = 0
+
+	# 試合結果を hoge.foo に保存
+	def _save_history(self):
+		self.logger.info('saved log')
+		# jsonに整形
+		dt_now = datetime.datetime.now()
+		now = dt_now.strftime('%Y%m%d%H%M%S')
+		history_file_name = self.config['log']['name'].format(now=now, chara=self.chara_name)
+		player = list(range(self.player_count))
+		for key, chara in enumerate(self.chara_name):
+			player[key] = {
+				'name': chara,
+				'order': self.player_order[key],
+				'power': self.power[key],
+				'stock': self.result_stock['count'][key],
+				'group': self.group_color[key]
+			}
+		json_object = {
+			'now': now,
+			'rule': {
+				'name': self.rule_name,
+				'group': self.group_name,
+				'stock': self.result_stock['max'],
+				'time': 0
+			},
+			'player': player
+		}
+
+		# 保存先が [URL なら POST 叩く][ローカルなら open->write]
+		path = self.config['log']['path']
+		if (0 < len(urllib.parse.urlparse(path).scheme)):
+			headers = self.config['log']['headers']
+			request = urllib.request.Request(path, urllib.parse.urlencode(json_object).encode('ascii'), headers)
+
+			try:
+				with urllib.request.urlopen(request) as response:
+					body = response.read()
+				self.logger.info('url=[%s],responce=%s', path, body)
+			except urllib.error.HTTPError as e:
+				self.logger.error('HTTPError:%s', e)
+			except urllib.error.URLError as e:
+				self.logger.error('URLError:%s', e)
+		else:
+			with open(path.format(file_name=history_file_name), mode='w') as f:
+				f.write( json.dumps(json_object, sort_keys=True) )
+
+		print('\rsaved=', history_file_name, player)
+
 	# スマブラの戦歴に関わる変数をデフォルトする
 	def _default_battle_params(self, player_count=2):
 		self.ratio = 0.0
@@ -388,7 +616,7 @@ class SmaBroEngine:
 		self.rule_name			= 'stock'	# stock or time
 		self.group_name			= 'smash'	# smash or team
 		self.group_color		= [''] * player_count
-		self.chara_came			= [''] * player_count
+		self.chara_name			= [''] * player_count
 		self.battle_time		= [datetime.datetime(1900, 1, 1, 0, 0) for _ in range(2)]	# MM:SS.MS の書式
 		self.player_damage		= [-1.0] * player_count
 		self.defeated_player	= [-1] * player_count
@@ -397,12 +625,14 @@ class SmaBroEngine:
 			if rule_name == 'stock': max is max stock, count is stock
 			if rule_name == 'time': max is add count, count is sub count
 		"""
+		self.power_diff		= 0
 		self.power			= [0] * player_count
 		self.player_order	= [-1] * player_count
 		self.player_count	= player_count
 
 		# ('', '', '', '') の作成だけしておく (読み取り先が無いと怒られるので)
-		self._store_battle_rate(self.chara_came)
+		self._store_battle_rate(self.chara_name)
+
 
 	""" capture系 hoge frame を検出した時にする処理 検出時間(昇順) """
 	# [READY to FIGHT]画面
@@ -422,11 +652,12 @@ class SmaBroEngine:
 		# 自分の戦闘力の増減値
 		power_area_image = convert_image[int(height/2):height, int(width/2):width]
 		gray_power_area_image = capture_gray_image[int(height/2):height, int(width/2):width]
-		power_area_image = Utils.trimming_any_rect(power_area_image, gray_power_area_image)
+		power_area_image, p = Utils.trimming_any_rect(power_area_image, gray_power_area_image)
 
 		gray_power_area_image = cv2.cvtColor(power_area_image, cv2.COLOR_RGB2GRAY)
 		_, gray_power_area_image = cv2.threshold(gray_power_area_image, 150, 255, cv2.THRESH_BINARY_INV)
-		power_area_image = Utils.trimming_any_rect(power_area_image, gray_power_area_image, 1, 0)
+		power_area_image, p = Utils.trimming_any_rect(power_area_image, gray_power_area_image, 1, 0)
+
 		#cv2.imshow('capture_ready_to_fight_power', power_area_image)	# debug only
 		power = self.ocr_tool.image_to_string(
 			Utils.cv2pil(power_area_image), lang='eng',
@@ -436,10 +667,10 @@ class SmaBroEngine:
 
 		power = int(Utils.replace_invalid_char(power))
 		self.power[0] = power
-		power_diff = self.power[0] - self.back_power
+		self.power_diff = self.power[0] - self.back_power
 		self.back_power = self.power[0]
 
-		diff_message = ' diff: {sign}{power_diff}'.format(sign='' if power_diff < 0 else '+', power_diff=power_diff)
+		diff_message = ' diff: {sign}{power_diff}'.format(sign='' if self.power_diff < 0 else '+', power_diff=self.power_diff)
 		self.logger.info(diff_message)
 		print('\n', diff_message)
 
@@ -462,10 +693,10 @@ class SmaBroEngine:
 
 		entry_name = ['', '']
 		for key, image in enumerate(name_area_image):
-			image = Utils.trimming_any_rect(image, gray_name_area_image[key])
+			image, _ = Utils.trimming_any_rect(image, gray_name_area_image[key])
 			_, convert_image = cv2.threshold(image, 200, 255, cv2.THRESH_BINARY)
 			convert_image = cv2.bitwise_not(convert_image)
-			image = Utils.trimming_any_rect(image, convert_image, margin=2)
+			image, _ = Utils.trimming_any_rect(image, convert_image, margin=2)
 
 			entry_name[key] = '' + self.ocr_tool.image_to_string(
 				Utils.cv2pil(image), lang='jpn',
@@ -502,35 +733,35 @@ class SmaBroEngine:
 			name_area_image[key] = convert_image[0:int(height/7), int(one_width*key+margin_width):int(one_width*(key+1))]
 			gray_name_area_image[key] = gray_convert_image[0:int(height/7), int(one_width*key+margin_width):int(one_width*(key+1))]
 
-		chara_came = [''] * self.player_count
+		chara_name = [''] * self.player_count
 		for key, image in enumerate(name_area_image):
-			image = Utils.trimming_any_rect(image, gray_name_area_image[key], 5)
+			image, _ = Utils.trimming_any_rect(image, gray_name_area_image[key], 5)
 			image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
 			#cv2.imshow('name_area_image'+ str(key), name_area_image[key])		# debug only
-			chara_came[key] = '' + self.ocr_tool.image_to_string(
+			chara_name[key] = '' + self.ocr_tool.image_to_string(
 				Utils.cv2pil(image), lang='eng',
 				builder=pyocr.builders.TextBuilder() )
-			chara_came[key] = Utils.replace_invalid_char(chara_came[key])
-		if ( all(['' == name for name in chara_came]) ):
+			chara_name[key] = Utils.replace_invalid_char(chara_name[key])
+		if ( all(['' == name for name in chara_name]) ):
 			return
 
 		# 画像をごちゃごちゃしてもまだ誤字/脱字/不一致があるので一致率が 50% 以上で一番高いものにする
 		name_ratio = [0.5] * self.player_count
-		for key, name in enumerate(chara_came):
+		for key, name in enumerate(chara_name):
 			name = name.upper()
 			for chara, jpname in self.chara.items():
 				ratio = difflib.SequenceMatcher(None, name, chara).ratio()
 				if (name_ratio[key] <= ratio):
-					self.chara_came[key] = jpname
+					self.chara_name[key] = jpname
 					name_ratio[key] = ratio
 			# 誤検知しまくったキャラ or 新キャラの為に残しておく
-			if (self.chara_came[key] == ''):
-				self.chara_came[key] = chara_came[key] +'?'
+			if (self.chara_name[key] == ''):
+				self.chara_name[key] = chara_name[key] +'?'
 
 		# なかったら作成だけしておく
-		self._store_battle_rate(self.chara_came)
+		self._store_battle_rate(self.chara_name)
 
-		self.logger.info('with%s=%s=>%s,%s', self.player_count, chara_came, self.chara_came, name_ratio)
+		self.logger.info('with%s=%s=>%s,%s', self.player_count, chara_name, self.chara_name, name_ratio)
 
 	# [GO!]画面の右上の [.00] の数字
 	def _capture_go_frame(self, capture_gray_image):
@@ -539,7 +770,7 @@ class SmaBroEngine:
 		_, mask_image = cv2.threshold(convert_image, 200, 255, cv2.THRESH_BINARY)
 
 		gray_convert_image = cv2.bitwise_and(capture_gray_image, mask_image)
-		battle_time_area_image = Utils.trimming_any_rect(
+		battle_time_area_image, _ = Utils.trimming_any_rect(
 			capture_gray_image, gray_convert_image, 0, 1e2, filled=True)
 
 		_, convert_image = cv2.threshold(battle_time_area_image, 200, 255, cv2.THRESH_BINARY_INV)
@@ -548,7 +779,7 @@ class SmaBroEngine:
 		battle_time_area_image = cv2.bitwise_and(gray_convert_image, convert_image)
 		#		battle_time_area_image = cv2.bitwise_not(battle_time_area_image)
 
-		#		battle_time_area_image = Utils.trimming_any_rect(
+		#		battle_time_area_image, _ = Utils.trimming_any_rect(
 		#			battle_time_area_image, convert_image, 2, 1e3, filled=True, fill_color=[0,0,0])
 
 		cv2.imshow('battle_time_area_image', gray_convert_image)
@@ -587,7 +818,7 @@ class SmaBroEngine:
 		gray_stock_area_image[1] = gray_convert_image[0:height, int(width/2):width]
 		result_stock = list(range(2))
 		for key, val in enumerate(stock_area_image):
-			stock_area_image[key] = Utils.trimming_any_rect(
+			stock_area_image[key], _ = Utils.trimming_any_rect(
 				stock_area_image[key], gray_stock_area_image[key], 5, 1e3, filled=True)
 			#cv2.imshow('stock_area_image'+ str(key), stock_area_image[key])		# debug only
 
@@ -647,11 +878,11 @@ class SmaBroEngine:
 		gray_power_area_image[1] = convert_image[int(height/4):int(height/2), int(width/20*11):width]
 		# 爆速+連打ニキがいて検出できなくなるので逆順で評価
 		for key, image in enumerate(power_area_image):
-			image = Utils.trimming_any_rect(image, gray_power_area_image[key])
+			image, _ = Utils.trimming_any_rect(image, gray_power_area_image[key])
 
 			convert_image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
 			_, convert_image = cv2.threshold(convert_image, 127, 255, cv2.THRESH_BINARY_INV)
-			image = Utils.trimming_any_rect(image, convert_image, 1, 1)
+			image, _ = Utils.trimming_any_rect(image, convert_image, 1, 1)
 
 			power = self.ocr_tool.image_to_string(
 				Utils.cv2pil(image), lang='eng',
@@ -662,6 +893,25 @@ class SmaBroEngine:
 				self.power[key] = int(Utils.replace_invalid_char(power))
 			except ValueError:
 				pass
+
+	# 試合終了
+	def _battle_end(self):
+		if (self.frame_state != FrameState.FS_BATTLE_END):
+			return
+		if ( all([(-1 == order) for order in self.player_order]) ):
+			# 順位が全く取れていない場合は何もしない(※これはイメージです の画像くらい違うものを検出してる可能性があるため)
+			return False
+
+		self.logger.debug(f'_battle_end {self.rule_name}')
+
+		self._research_battle_result()
+
+		if ('stock' == self.rule_name):
+			self._stock_rate()
+		elif ('time' == self.rule_name):
+			self._time_rate()
+
+		self._save_history()
 
 
 	""" is系 (watch含む) 検出時間(昇順) """
@@ -735,7 +985,7 @@ class SmaBroEngine:
 
 	# [GO!]画面かどうか
 	def _is_go_frame(self, capture_image):
-		self.ratio, _ = Utils.match_masked_color_image(capture_image, self.battle_time_zero_color, self.battle_time_zero_mask)
+		self.ratio, _ = Utils.match_masked_color_image(capture_image, self.battle_time_zero_color, self.battle_time_zero_mask, is_trans=True)
 		self.ratio = round(float(self.ratio), 3)
 		return 0.98 <= self.ratio
 
@@ -824,10 +1074,10 @@ class SmaBroEngine:
 
 	# [GAME SET][TIME UP]画面かどうか
 	def _is_game_end_frame(self, capture_image):
-		game_set_ratio, _ = Utils.match_masked_color_image(capture_image, self.game_set_color, self.game_set_mask)
-		time_up_ratio, _ = Utils.match_masked_color_image(capture_image, self.time_up_color, self.time_up_mask)
+		game_set_ratio, _ = Utils.match_masked_color_image(capture_image, self.game_set_color, self.game_set_mask, is_trans=True)
+		time_up_ratio, _ = Utils.match_masked_color_image(capture_image, self.time_up_color, self.time_up_mask, is_trans=True)
 		self.ratio = round(float(max(game_set_ratio, time_up_ratio)), 3)
-		return 0.97 <= self.ratio
+		return 0.98 <= self.ratio
 
 	# 結果画面(戦闘力が見える)かどうかをついでに返す
 	def _watch_reuslt_frame(self, capture_image, capture_gray_image):
@@ -871,6 +1121,9 @@ class SmaBroEngine:
 				self.player_order[player] = int( 1 + order )
 				self.logger.info('player,order,power=%s,%s,%s', player, self.player_order[player], self.power[player])
 
+		if ( all([-1 != order for order in self.player_order]) and any([ 1000 < power for power in self.power ]) ):
+			return True
+
 		return False
 
 	# 「同じ相手との再戦を希望しますか？」画面か
@@ -882,7 +1135,6 @@ class SmaBroEngine:
 		self.ratio, _ = Utils.match_masked_color_image(capture_image, self.battle_retry_color, self.battle_retry_mask)
 		self.ratio = round(float(self.ratio), 3)
 		return 0.97 <= self.ratio
-
 
 	# frame がどこかを特定して応じて処理をする
 	def _capture_any_frame(self, capture_image):
@@ -907,12 +1159,18 @@ class SmaBroEngine:
 		elif (self.frame_state in {FrameState.FS_UNKNOWN}):
 			return
 
-		if (self.frame_state in {FrameState.FS_RESULT, FrameState.FS_READY_TO_FIGHT}):
+		if (self.frame_state in {FrameState.FS_READY_TO_FIGHT, FrameState.FS_RESULT, FrameState.FS_RETRY}):
 			# [まもなく開始]画面 (プレイヤー名)
 			if (self._is_ready_ok_frame(capture_image)):
+				self._battle_end()
 				self._default_battle_params()
 				self.frame_state = FrameState.FS_READY_OK
 				self._capture_ready_ok_frame(gray_image)
+
+			if (self._is_battle_retry_frame(capture_image)):
+				if (self.frame_state == FrameState.FS_RESULT):
+					self.frame_state = FrameState.FS_RETRY
+
 			return
 
 		if (self.frame_state == FrameState.FS_READY_OK):
@@ -927,6 +1185,7 @@ class SmaBroEngine:
 					return
 
 				# [{foo} vs {bar}]画面 (1on1,キャラクター名)
+				# TODO:開始時間をここでついでにとりたい
 				if (self._is_vs_frame(capture_image)):
 					self.frame_state = FrameState.FS_WHAT_CHARACTER
 					self._capture_character_name(gray_image)
@@ -942,16 +1201,17 @@ class SmaBroEngine:
 			return
 
 		if (self.frame_state == FrameState.FS_WHAT_CHARACTER):
-			# [GO!]画面 (開始時間)
+			# [.00]画面 (開始時間)
 			if (self._is_go_frame(capture_image)):
 				self.logger.debug(f'_is_go_frame{self.ratio}')
 				self.frame_state = FrameState.FS_BATTLE
-				#self._capture_go_frame(gray_image)		# TODO:開始時間取りたいけど数値の認識率が低すぎる、、、。
+				# self._capture_go_frame(gray_image)		
 			return
 
 		if (self.frame_state == FrameState.FS_BATTLE):
 			# [GAME SET][TIME UP]画面
 			if (self._is_game_end_frame(capture_image)):
+				self.logger.debug(f'_is_game_end_frame{self.ratio}')
 				self.frame_state = FrameState.FS_BATTLE_END
 				return
 
@@ -982,275 +1242,206 @@ class SmaBroEngine:
 
 			return
 
-	# 試合終了
-	def _battle_end(self):
-		if (self.frame_state != FrameState.FS_BATTLE_END):
-			return
-		if ( all([(-1 == order) for order in self.player_order]) ):
-			# 順位が全く取れていない場合は何もしない(※これはイメージです の画像くらい違うものを検出してる可能性があるため)
-			return False
 
-		self.logger.debug(f'_battle_end {self.rule_name}')
-
-		self._research_battle_result()
-
-		if ('stock' == self.rule_name):
-			self._stock_rate()
-		elif ('time' == self.rule_name):
-			self._time_rate()
-
-		self._save_history()
-
-	# 結果画面が正常に捕捉できなかった場合の救済措置
-	def _research_battle_result(self):
-		# 	順位を -1 から N に変更
-		order_remain = [ (player+1) for player in range(self.player_count) if not (player+1) in self.player_order ]
-		if (1 < len(order_remain)):
-			# わからない順位が複数ある
-			Utils.width_full_print(f"can't found player order's for {order_remain}", logger_func=self.logger.info)
-			return
-		if (0 == len(order_remain)):
-			# 正常なのでなにもしない
-			self.logger.debug(f'player order no anything changed. {self.player_order}')
-			return
-
-		min_order = min(self.player_order)
-		if (all([ min_order == order for order in self.player_order ])):
-			# 全プレイヤーが同じ順位 (正常なストックから推測)
-			if ('stock' == self.rule_name):
-				lowest = int(numpy.argmax(self.player_order))
-				highest = int(numpy.argmin(self.player_order))
-			elif ('time' == self.rule_name):
-				pass
-		else:
-			# かけている順位が一つ (他の順位から推測)
-			player = int(numpy.argmin(self.player_order))
-			self.player_order[player] = order_remain[0]
-			self.logger.debug(f'player order changed. {player} -> {order_remain[0]}th')
-
-	# 1pプレイヤー目線のキャラ別勝敗数を蓄える
-	def _store_battle_rate(self, chara_name, win=0, lose=0):
-		win = win + 0
-		lose = lose + 0
-		key = tuple(chara_name)
-		if ( not key in self.battle_rate ):
-			self.battle_rate[key] = { 'win':0, 'lose':0 }
-
-		self.battle_rate[key]['win'] += win
-		self.battle_rate[key]['lose'] += lose
-		
-		plus = 1 if 0 < win else -1 if 0 < lose else 0
-		if (0 == plus):
-			return
-
-		if ( abs(self.battle_streak_rate + plus) < abs(self.battle_streak_rate) ):
-			# 計算後の値が現在の絶対値より小さくなる場合 連hoge が切れたことになるのでリセットする
-			self.battle_streak_rate = 0
-		self.battle_streak_rate += plus
-		self.battle_history.append(plus)
-
-	# 勝敗の保存 (stock戦)
-	def _stock_rate(self):
-		if ( all([-1 == player for player in self.result_stock['count']]) ):
-			# ストック数が1
-			self.result_stock = { 'count':[1]*self.player_count, 'max':[1]*self.player_count }
-
-		lowest = int(numpy.argmax(self.player_order))
-		highest = int(numpy.argmin(self.player_order))
-		lowest_order = self.player_order[lowest]
-		highest_order = self.player_order[highest]
-		if ( self.result_stock['count'][lowest] == self.result_stock['count'][highest] ):
-			# サドンデスなどでストック数が同じになる場合があるので、負けたほうをひとつ減算
-			for player in numpy.where( self.player_order == lowest_order )[0]:
-				# team サドンデス用に where match
-				self.result_stock['count'][player] -= 1
-
-		# 順位に基づいてストック数を再計算
-		highest_count = lowest_count = 0
-		for player in numpy.where( self.player_order == highest_order )[0]:
-			highest_count += self.result_stock['count'][player]
-		for player in numpy.where( self.player_order == lowest_order )[0]:
-			lowest_count += self.result_stock['count'][player]
-		if ( highest_count < lowest_count ):
-			# ストックの合計において,勝っている方 < 負けている方 の場合,検出エラーとして扱い,順位に基づいてストック数の最大を 1 として算出する
-			for player in numpy.where( self.player_order == lowest_order )[0]:
-				self.result_stock['count'][player] = 0
-				self.result_stock['max'][player] = 1
-			for player in numpy.where( self.player_order == highest_order )[0]:
-				self.result_stock['count'][player] = 1
-				self.result_stock['max'][player] = 1
-			self.logger.debug(f'stock recalc {self.result_stock}')
-
-		self._store_battle_rate( self.chara_came,
-			self.player_order[0] == highest_order,
-			self.player_order[0] == lowest_order)
-
-	# 勝敗の保存 (time戦)
-	def _time_rate(self):
-		# 順位に基づいてポイントを再計算
-		lowest = int(numpy.argmax(self.player_order))
-		highest = int(numpy.argmin(self.player_order))
-		lowest_order = self.player_order[lowest]
-		highest_order = self.player_order[highest]
-		highest_point = lowest_point = 0
-		for player in self.player_order:
-			point = self.result_stock['max'][player] - self.result_stock['count'][player]
-			if (lowest == player):
-				lowest_point = point
-			elif (highest == player):
-				highest_point = point
-
-		if ( highest_point < lowest_point ):
-			# 撃墜数 - 落下数 において,勝っている方 < 負けている方 の場合,検出エラーとして扱い,順位に基づいてポイントの最大を player_count として算出する
-			# time戦に関しては result_stock の内容が count=落下数 max=撃墜数 となっている
-			max_point = self.player_count - len( list(numpy.where(self.player_order == highest)) ) + 1
-			max_point = max_point if max_point == self.player_count else max_point - 1
-			for player, order in enumerate(self.player_order):
-				self.result_stock['count'][player] = order - 1
-				self.result_stock['max'][player] = (max_point - order)
-			"""
-			o: count, max
-			1: 1-1=0, 4-1=3
-			2: 2-1=1, 4-2=2
-			3: 3-1=2, 4-3=1
-			4: 4-1=3, 4-4=0
-
-			1: 1-1=0, 2-1=1
-			1: 1-1=0, 2-1=1
-			2: 2-1=1, 2-2=0
-			2: 2-1=1, 2-2=0
-			"""
-
-		self._store_battle_rate( self.chara_came,
-			self.player_order[-1] > self.player_order[0],
-			self.player_order[-1] < self.player_order[0] )
-
-	# 戦歴の読込
-	def _load_history(self):
-		po = Path('./log/')
-		history_pattern = self.config['log']['name'].format(now=r'\d+', chara=r'\S+')
-		dirlist = [file for file in po.glob('*.json') if re.search(history_pattern, str(file))]
-		for history_file in dirlist:
-			Utils.width_full_print(f'\r{history_file}')
-			with open(history_file) as f:
-				try:
-					history_file = json.load(f)
-					player_info = history_file['player']
-				except json.decoder.JSONDecodeError:
-					# 空 or json が正しくないものは無視する
-					continue
-
-			# キャラ別戦歴
-			self._store_battle_rate( [player['name'] for player in player_info[0:] ],
-				player_info[-1]['order'] > player_info[0]['order'],
-				player_info[-1]['order'] < player_info[0]['order'] )
-
-		self.battle_streak_rate = 0
-
-	# 試合結果を hoge.foo に保存
-	def _save_history(self):
-		self.logger.info('saved log')
-		# jsonに整形
-		dt_now = datetime.datetime.now()
-		now = dt_now.strftime('%Y%m%d%H%M%S')
-		history_file_name = self.config['log']['name'].format(now=now, chara=self.chara_came)
-		player = list(range(self.player_count))
-		for key, chara in enumerate(self.chara_came):
-			player[key] = {
-				'name': chara,
-				'order': self.player_order[key],
-				'power': self.power[key],
-				'stock': self.result_stock['count'][key],
-				'group': self.group_color[key]
-			}
-		json_object = {
-			'now': now,
-			'rule': {
-				'name': self.rule_name,
-				'group': self.group_name,
-				'stock': self.result_stock['max'],
-				'time': 0
-			},
-			'player': player
-		}
-
-		# 保存先が [URL なら POST 叩く][ローカルなら open->write]
-		path = self.config['log']['path']
-		if (0 < len(urllib.parse.urlparse(path).scheme)):
-			headers = self.config['log']['headers']
-			request = urllib.request.Request(path, urllib.parse.urlencode(json_object).encode('ascii'), headers)
-
-			try:
-				with urllib.request.urlopen(request) as response:
-					body = response.read()
-				self.logger.info('url=[%s],responce=%s', path, body)
-			except urllib.error.HTTPError as e:
-				self.logger.error('HTTPError:%s', e)
-			except urllib.error.URLError as e:
-				self.logger.error('URLError:%s', e)
-		else:
-			with open(path.format(file_name=history_file_name), mode='w') as f:
-				f.write( json.dumps(json_object, sort_keys=True) )
-
-		print('\rsaved=', history_file_name, player)
-
-	# バトル中に表示する情報
-	def _battle_information(self, capture_image):
-		# N戦の勝率
-		battle_streak_ratio_max = self.config['option']['battle_streak_ratio_max']
-		battle_streak_ratio = [{'win':0.0, 'lose':0.0, 'length':0} for _ in battle_streak_ratio_max]
-		total_count = len(self.battle_history)
-		if (0 < total_count):
-			for key, battle_max in enumerate(battle_streak_ratio_max):
-				count = min(total_count, len(self.battle_history[:battle_max]) )
-				win_count = lose_count = 0
-				for result in self.battle_history[-count:]:
-					win_count += 1 if 0 < result else 0
-					lose_count += 1 if result < 0 else 0
-				battle_streak_ratio[key]['win'] = round(win_count / count * 100.0, 1)
-				battle_streak_ratio[key]['lose'] = round(lose_count / count * 100.0, 1)
-				battle_streak_ratio[key]['length'] = count
-
+	# 文字 が主な情報
+	def _user_interface_text(self, capture_image):
 		# 表示する情報
-		chara_came = list(self.chara_came)
-		count = 65
-		for key, chara in enumerate(self.chara_came):
+		chara_name = list(self.chara_name)
+		base_char = 65
+		for key, chara in enumerate(self.chara_name):
 			if ('' == chara):
-				chara_came[key] = chr(count)
-				count += 1
-		player_info = dict(zip( tuple(chara_came), list(zip( self.result_stock['count'], self.group_color )) ))
-		battle_information_content = {}
+				chara_name[key] = chr(base_char)
+				base_char += 1
+		player_info = dict(zip( tuple(chara_name), list(zip( self.result_stock['count'], self.group_color )) ))
+		battle_information_text = {}
 		for name in ['gui_text', 'cui_text']:
-			battle_information_content[name] = self.config['option']['battle_information'][name].format(
+			battle_information_text[name] = self.config['option']['battle_information'][name].format(
 					frame=FrameState(self.frame_state + 1).name, ratio=self.ratio,
 					entry_name=self.entry_name, group_name=self.group_name,
 					group_color=self.group_color,
-					chara_came=self.chara_came, stock=self.result_stock['count'],
+					chara_name=self.chara_name, stock=self.result_stock['count'],
 					player_info=f'{player_info}',
-					battle_rate=self.battle_rate[tuple(self.chara_came)],
+					battle_rate=self.battle_rate[tuple(self.chara_name)],
 					streak=abs(self.battle_streak_rate),
 					streak_name=('lose' if self.battle_streak_rate < 0 else 'win'),
-					streak_ratio=battle_streak_ratio
+					streak_ratio=self.battle_streak_ratio
 				)
 
 		if (self.config['option']['battle_informationGUI']):
-			battle_information_image = numpy.zeros(capture_image.shape, dtype=numpy.uint8)
-			battle_information_image[:] = tuple(self.config['option']['battle_information']['back'])
-			Utils.draw_text_line(battle_information_image, battle_information_content['gui_text'],
+			self.gui_info['image'] = Image.fromarray(self.gui_info['image'])
+			draw = ImageDraw.Draw(self.gui_info['image'])
+
+			draw.text(
 				tuple(self.config['option']['battle_information']['pos']),
-				self.config['option']['battle_information']['tickness'],
-				self.config['option']['battle_information']['color'], 1.0)
-			cv2.imshow(self.config['option']['battle_information']['caption'], battle_information_image)
+				battle_information_text['gui_text'], font=self.font,
+				fill=tuple(self.config['option']['battle_information']['color'])
+				)
+			self.gui_info['image'] = numpy.array(self.gui_info['image'])
+			self.gui_info['image'] = Utils.pil2cv(self.gui_info['image'])
 
 		if (self.config['option']['battle_informationCUI']):
-			Utils.width_full_print(battle_information_content['cui_text'])
+			Utils.width_full_print(battle_information_text['cui_text'])
+
+		return self.gui_info
+
+	# FS_WHAT_CHARACTER 中のアニメーション
+	def _animation_what_character(self, capture_image):
+		win = self.battle_rate[tuple(self.chara_name)]['win']
+		lose = self.battle_rate[tuple(self.chara_name)]['lose']
+		total = win+lose
+		if (0 <= self.animation_count):
+			# グラフの作成,および試合数 0 からの遷移
+			plt.gca().clear()
+			lose = int(lose/5 * (5-self.animation_count))
+			win = int(win/5 * (5-self.animation_count))
+			other = int(1/10 * self.animation_count )
+			self.gui_info['ax'].pie(
+				numpy.array([lose, win, other]),
+				labels=['']*3,
+				counterclock=False, startangle=90, radius=0.2, labeldistance=1.0,
+				wedgeprops={'linewidth': 2, 'edgecolor':"black"},
+				colors=['lightblue', 'pink', 'black'], textprops={'color':'white'})
+			self.gui_info['fig'].canvas.draw()
+
+			image = numpy.array(self.gui_info['fig'].canvas.renderer.buffer_rgba())
+			image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+			# グラフの部分だけ取り出して,
+			h, w = image.shape[0:2]
+			image = image[ int(h/3+2):int(h/3*2+2), int(w/5*2+8):int(w/5*3+8) ]	# matplotlibのグラフなんで中央に描画してくれないん？？？
+			h, w = image.shape[0:2]
+			si_h, si_w = self.smabro_icon.shape[0:2]
+			x = int((w-si_w)/2)
+			y = int((h-si_h)/2)
+			# iconの透過色付きの貼り付け
+			mask = self.smabro_icon[:,:,3]
+			mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+			mask = mask / 255.0
+			smabro_icon = self.smabro_icon[:,:,:3]
+			image[ y:y+si_h, x:x+si_w ] = image[ y:y+si_h, x:x+si_w ] * 1 - mask
+			smabro_icon = cv2.bitwise_not(cv2.cvtColor( Utils.pil2cv(smabro_icon * mask), cv2.COLOR_BGR2RGB ))
+			smabro_area = cv2.cvtColor( Utils.pil2cv(image[ y:y+si_h, x:x+si_w ]), cv2.COLOR_BGR2RGB )
+			image[ y:y+si_h, x:x+si_w ] = cv2.bitwise_and(smabro_icon, smabro_area)
+
+			self.animation_image = image
+
+		self.animation_count -= 1 if -10 < self.animation_count else 0
+		# 本体と合成
+		h, w = self.animation_image.shape[0:2]
+		to_h, to_w = self.gui_info['image'].shape[0:2]
+		self.gui_info['image'][ to_h-h:to_h,
+			int((to_w-w)/2):int((to_w-w)/2+w) ] = self.animation_image
+
+		# 消滅アニメ
+		alpha = 1.0 / max(10-abs(self.animation_count), 1)
+		black = Utils.pil2cv( numpy.zeros((h,w,3)) )
+		self.animation_image = cv2.addWeighted(black, (1-alpha), self.animation_image, (1-alpha), 0)
+		# %表示
+		self.gui_info['image'] = Image.fromarray(self.gui_info['image'])
+		draw = ImageDraw.Draw(self.gui_info['image'])
+		alpha = 1.0 - alpha
+		color = list(self.config['option']['battle_information']['color'])
+		color = tuple( map(lambda c: max(int(c * alpha), 0), color) )
+		left_text = f'{win}勝' # 左寄せは 単位のせいで python デフォルトの機能で出来ないのでほげほげする
+		left_text += ' ' * (8-len(left_text))
+		x_margin = len(left_text)*10	# 10 = fontsize / 2
+		draw.text( (to_w/2-x_margin, to_h-h/2), left_text, font=self.font, fill=color )
+		draw.text( (to_w/2, to_h-h/2), f'{lose: >6}勝', font=self.font, fill=color )
+		
+		self.gui_info['image'] = numpy.array(self.gui_info['image'])
+		self.gui_info['image'] = Utils.pil2cv(self.gui_info['image'])
+
+	# FS_RETRY 後のアニメーション
+	def _animation_retry(self, capture_image):
+		if (50 == self.animation_count):
+			self.animation_image = numpy.zeros(capture_image.shape, dtype=numpy.uint8)
+
+		if (40 == self.animation_count):
+			battle_streak_ratio_max = self.config['option']['battle_streak_ratio_max']
+			self.power_history = self.power_history[::-1]
+			self.power_history = self.power_history[0:battle_streak_ratio_max[0]]
+			self.power_history = self.power_history[::-1]
+
+			length = len(self.power_history)
+			num = numpy.array(self.power_history)[:,0]	# 試合番号
+			power = numpy.array(self.power_history)[:,1]	# 戦闘力
+
+			p10 = [p/10000 for p in power]
+			plt.gca().clear()
+			self.gui_info['ax'].plot( num, p10, marker='.', color='pink', label='世界戦闘力')
+
+			self.gui_info['ax'].set_xlabel('試合数')
+			self.gui_info['ax'].set_ylabel('世界戦闘力(万) (戦闘力 ÷ 10000)')
+			self.gui_info['ax'].set_title('勝率 - win rate')
+			self.gui_info['ax'].xaxis.label.set_color('gray')
+			self.gui_info['ax'].yaxis.label.set_color('gray')
+			self.gui_info['ax'].tick_params(axis='x', colors='gray')
+			self.gui_info['ax'].tick_params(axis='y', colors='gray')
+			axlegend = self.gui_info['ax'].legend()
+			axlegend.get_frame().set_edgecolor('#CFCFCF')
+			for axtext in axlegend.get_texts():
+			    axtext.set_color('gray')
+			self.gui_info['fig'].canvas.draw()
+			image = numpy.array(self.gui_info['fig'].canvas.renderer.buffer_rgba())
+			self.animation_image = cv2.cvtColor(image, cv2.COLOR_BGRA2RGB)
+
+		self.animation_count -= 1 if 0 < self.animation_count else 0
+
+		self.gui_info['image'] = cv2.addWeighted(self.gui_info['image'], 1,
+			self.animation_image, 1, 0)		
+
+	# アニメーション が主な情報
+	def _user_interface_animation(self, capture_image):
+		if (not self.config['option']['battle_information_animation']):
+			return
+		if (2 != self.player_count):
+			# 非対応
+			return
+
+		if (FrameState.FS_READY_OK == self.frame_state):
+			self.animation_count = 4 # _animation_what_character に必要な初期化
+
+		# [VS]画面中に キャラ別勝率を表示する
+		if (FrameState.FS_WHAT_CHARACTER == self.frame_state and -10 < self.animation_count):
+			self._animation_what_character(capture_image)
+
+		if (FrameState.FS_BATTLE_END == self.frame_state):
+			self.animation_count = 50 # _animation_what_character に必要な初期化
+
+		if (FrameState.FS_RETRY == self.frame_state and 2 < len(self.power_history) and 0 < self.animation_count):
+			self._animation_retry(capture_image)
+
+	# バトル中に表示する情報
+	def _user_interface(self, images):
+		capture_image = Utils.pil2cv(images)
+		if (self.config['option']['battle_informationGUI']):
+			if (self.gui_info is None):
+				gui_image = numpy.zeros(capture_image.shape, dtype=numpy.uint8)
+				gui_image[:] = tuple(self.config['option']['battle_information']['back'])
+				fig, ax = plt.subplots(
+					figsize=(capture_image.shape[1]/100, capture_image.shape[0]/100), dpi=100,
+					facecolor=tuple(self.config['option']['battle_information']['back'])
+					)
+				self.gui_info = { 'image':gui_image, 'fig':fig, 'ax':ax }
+			else:
+				self.gui_info['image'][:] = tuple(self.config['option']['battle_information']['back'])
+
+
+		self._user_interface_text(capture_image)
+		self._user_interface_animation(capture_image)
+
+		if (self.config['option']['battle_informationGUI']):
+			cv2.imshow(self.config['option']['battle_information']['caption'], self.gui_info['image'])
+
 
 	# 1 frame 中の処理
-	def _capture_frame(self):
+	def _main_frame(self):
 		# 1 frame capture
 		capture_image = self._capture_window()
+
 		self._capture_any_frame(capture_image)
-		self._battle_information(capture_image)
+
+		self._user_interface(capture_image)
+
 		cv2.waitKey(1)
 
 		# GUIを表示しているときだけ WM_CLOSE で終了する
@@ -1264,6 +1455,7 @@ class SmaBroEngine:
 		Utils.width_full_print('initialize...', logger_func=self.logger.debug)
 		self._load_config()
 		self._load_resources()
+		self._default_battle_params()
 		self._load_first_only()
 		self._load_history()
 		self._init_capture_window()
@@ -1281,10 +1473,11 @@ class SmaBroEngine:
 
 		Utils.width_full_print('exit.', logger_func=self.logger.info)
 
+
 	# main loop
 	def _main_loop(self):
 		Utils.width_full_print('ready.', logger_func=self.logger.info)
-		while( self._capture_frame() ):
+		while( self._main_frame() ):
 			pass
 
 	# exeception dump

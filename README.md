@@ -3,7 +3,7 @@ smabrog
 ===
 
 ## Description
-大乱闘スマッシュブラザーズSpecial (super smash brothers special) の為の戦績保存ツール
+大乱闘スマッシュブラザーズSpecial (super smash brothers special) の為の自動戦績保存/送信ツール
 
 ## Usage
 - 導入の方法
@@ -13,7 +13,7 @@ smabrog
         - PCおよび任意のキャプチャソフト
         - smabrog.exe
     1. キャプチャソフト と スマブラSP を起動して オンラインの [READY to FIGHT]が表示された画面にします
-    2. [smabrog.zip](https://drive.google.com/file/d/1e28-5FS7v3A3uT0s7DQTF_Y8wr7MguDX/view?usp=sharing) を解凍して smabrog.exe を起動すると、初回起動のみ、解像度を [16:9] をベースにして FHD(1920x1080) まで自動で再比較、検出します
+    2. [smabrog.zip](https://drive.google.com/drive/folders/1-IiiCSpREpDFTm-W0emJHehfb0Fduit4?usp=sharing) を解凍して smabrog.exe を起動すると、初回起動のみ、解像度を [16:9] をベースにして FHD(1920x1080) まで自動で再比較、検出します
         - もしも解像度を固定にしたい場合は **smabro.exeが終了後に** config.json の 'every_time_find_capture_area' を false に設定してください
         - [16:9] 以外の解像度は検出率が低くなるかもしれないですけど、config.json の capture.width-height を任意の値にすると、もしかしたら検出されるかもしれないです。
     3. 自動でキャプチャ画面を捕捉します (誤検出されないように他のウィンドウを最小化または閉じておく事をおすすめします)
@@ -74,6 +74,20 @@ smabrog
             time                /* {[7|5|3]minute 未実装} */
     ```
 
+### Q&A
+- Q. スマブラが検出されない
+    - A. 起動してから初期化中に **not found capture area.** と表示されている場合キャプチャソフトの画面を捕捉できていない可能性があります。
+        => Q. 検出率を上げるには
+
+- Q. 検出率を上げるには
+    - A. 下記の対処法が考えられます
+        - キャプチャソフトの解像度を[16:9]にすること
+        - [READY to FIGHT]の画面がはっきり表示されていること
+        - キャプチャソフト や smabrog.exe 以外のソフトを起動していないこと
+- Q. 試合結果がうまく検出されないです
+    - A. FS_READY_TO_FIGHT の検出率が 0.99 以上なのを確認して **自分の順位や戦闘力が表示されてる画面** をいつもよりゆっくり進んでいくとより検出できるようになります
+        - または[連戦を続けますか or READYtoFIGHT]の画面で誤検出した時用の処理をしているのでその画面で保存されなければ、全くに近いほど検出されなかった事を示しているので、原因が知りたい場合は作者にlogを提出してみてください
+
 ## Author/Licence
 - [Humi@bass_clef_](https://twitter.com/bass_clef_)
 - [GPLv3](https://www.gnu.org/licenses/gpl-3.0.html)
@@ -81,8 +95,28 @@ smabrog
 - [Tesseract-OCR](https://github.com/tesseract-ocr/tesseract#license)
 
 ## log
-- 2020/3/5  first commit
-- 2020/3/23
+    ver = major.minor.build
+    major : 下位互換性がない変更 (例:保存しているjsonの記述に読み取れなくなる変更があったなど)
+    minor : majorの中で一応安定しているバージョン
+    build : pyinstallerするたびに加算されていく数値
+- 2020/3/5  
+    first commit
+- 2020/3/23  
     直接キャプチャしていない環境(youtubeの編集済みのものなど)を使用して判断した場合で,正常にキャラクター名が取得できない可能性があるので検出率の 10% を(他のキャラクターとして検出)するより,50%にあげて誤検出した場合を保存するように変更
-- 2020/3/27
+- 2020/3/27  
     プレイヤー人数を4人に対応
+- 2020/3/28  
+    ver 0.5 release
+
+- 2020/3/29  
+    結果画面の取得を 順位が両方取れて戦闘力が片方でも取れると検出するように変更
+- 2020/3/30  
+    GUI_text を PIl.draw にして日本語に対応しました
+- 2020/4/2  
+    - fix:
+        - 検出位置が軽微にずれていた
+        - 試合開始の検出率をあげる
+        - 戦歴の試合数の数が一致してなかった
+    - 一部の戦歴をアニメーションで表示するようにしました
+- 2020/4/3  
+    ver 0.6 release
