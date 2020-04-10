@@ -191,12 +191,12 @@ class SmaBroEngine:
 		self.battle_history = {}
 		self.power_history = {}
 		self.power_limit = { 'min':-1, 'max':-1 }
-		self.battle_streak_ratio = [{}]
 		self.time_zero = datetime.datetime(1900, 1, 1, 0, 0)
 		self.animation_count = 0
 		self.animation_calc = 0
 		self.animation_image = None
 		self.gui_info = None
+		self.battle_streak_ratio = [ {'win':0.0, 'lose':0.0, 'length':0} for _ in self.config['option']['battle_streak_ratio_max'] ]
 
 		# 解析に必要な画像リソース
 		self.ready_to_fight_mask = cv2.imread(+'resource/ready_to_fight_mask.png', cv2.IMREAD_UNCHANGED)
@@ -452,9 +452,9 @@ class SmaBroEngine:
 			self.power_history[chara_name[0]].append( [len(self.battle_history[chara_name[0]]), self.power[0]] )
 
 		battle_streak_ratio_max = self.config['option']['battle_streak_ratio_max']
+		self.battle_streak_ratio = [{'win':0.0, 'lose':0.0, 'length':0} for _ in battle_streak_ratio_max]
 		if ( 2 < len(self.battle_history[chara_name[0]]) ):
 			# N戦の勝率
-			self.battle_streak_ratio = [{'win':0.0, 'lose':0.0, 'length':0} for _ in battle_streak_ratio_max]
 			total_count = len(self.battle_history[chara_name[0]])
 			if (0 < total_count):
 				battle_history = self.battle_history[chara_name[0]][::-1]
@@ -468,11 +468,6 @@ class SmaBroEngine:
 					self.battle_streak_ratio[key]['win'] = round(win_count / count * 100.0, 1)
 					self.battle_streak_ratio[key]['lose'] = round(lose_count / count * 100.0, 1)
 					self.battle_streak_ratio[key]['length'] = count
-		else:
-			for key, battle_max in enumerate(battle_streak_ratio_max):
-				self.battle_streak_ratio[key]['win'] = 0
-				self.battle_streak_ratio[key]['lose'] = 0
-				self.battle_streak_ratio[key]['length'] = 0
 
 
 	# 勝敗の保存 (stock戦)
