@@ -5,6 +5,8 @@ smabrog
 ## Description
 大乱闘スマッシュブラザーズSpecial (super smash brothers special) の為の自動戦績保存/送信ツール
 
+[![スマブラSPの戦歴を自動で保存してくれるツール](https://img.youtube.com/vi/sIGOL1XGylY/0.jpg)](https://www.youtube.com/watch?v=sIGOL1XGylY)
+
 ## Usage
 - 忙しい人向け
     - 最新の smabrog.zip を [ここから](https://drive.google.com/drive/folders/1-IiiCSpREpDFTm-W0emJHehfb0Fduit4?usp=sharing) DL,解凍して
