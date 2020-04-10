@@ -6,6 +6,10 @@ smabrog
 大乱闘スマッシュブラザーズSpecial (super smash brothers special) の為の自動戦績保存/送信ツール
 
 ## Usage
+- 忙しい人向け
+    - 最新の smabrog.zip を [ここから](https://drive.google.com/drive/folders/1-IiiCSpREpDFTm-W0emJHehfb0Fduit4?usp=sharing) DL,解凍して
+    - スイッチ、スマブラ、キャプチャソフトをつけて smabrog/smabrog.exe を実行
+
 - 導入の方法
 
     0. 必要なもの
@@ -13,7 +17,8 @@ smabrog
         - PCおよび任意のキャプチャソフト
         - smabrog.exe
     1. キャプチャソフト と スマブラSP を起動して オンラインの [READY to FIGHT]が表示された画面にします
-    2. [smabrog.zip](https://drive.google.com/drive/folders/1-IiiCSpREpDFTm-W0emJHehfb0Fduit4?usp=sharing) を解凍して smabrog.exe を起動すると、初回起動のみ、解像度を [16:9] をベースにして FHD(1920x1080) まで自動で再比較、検出します
+        - マスターハンドが乗っかっていない赤のグラデーションの [READY to FIGHT] のほうが検出率が高いです
+    2. [smabrog.zip](https://drive.google.com/drive/folders/1-IiiCSpREpDFTm-W0emJHehfb0Fduit4?usp=sharing) を解凍して smabrog/smabrog.exe を起動すると、初回起動のみ、解像度を [16:9] をベースにして FHD(1920x1080) まで自動で再比較、検出します
         - もしも解像度を固定にしたい場合は **smabro.exeが終了後に** config.json の 'every_time_find_capture_area' を false に設定してください
         - [16:9] 以外の解像度は検出率が低くなるかもしれないですけど、config.json の capture.width-height を任意の値にすると、もしかしたら検出されるかもしれないです。
     3. 自動でキャプチャ画面を捕捉します (誤検出されないように他のウィンドウを最小化または閉じておく事をおすすめします)
@@ -71,7 +76,7 @@ smabrog
             name                /* ルール名 [stock|time] */
             group               /* グループ名 [smash|team] */
             stock               /* 最大数(stockの場合) */
-            time                /* {[7|5|3]minute 未実装} */
+            time                /* "MM:SS.NN" の形式で開始と終了の時間配列 [0-1] {未検出="00:00.00"} */
     ```
 
 ### Q&A
@@ -84,15 +89,19 @@ smabrog
         - キャプチャソフトの解像度を[16:9]にすること
         - [READY to FIGHT]の画面がはっきり表示されていること
         - キャプチャソフト や smabrog.exe 以外のソフトを起動していないこと
-- Q. 試合結果がうまく検出されないです
+- Q. 試合結果がうまく検出されない
     - A. FS_READY_TO_FIGHT の検出率が 0.99 以上なのを確認して **自分の順位や戦闘力が表示されてる画面** をいつもよりゆっくり進んでいくとより検出できるようになります
-        - または[連戦を続けますか or READYtoFIGHT]の画面で誤検出した時用の処理をしているのでその画面で保存されなければ、全くに近いほど検出されなかった事を示しているので、原因が知りたい場合は作者にlogを提出してみてください
+        - または[連戦を続けますか or READY to FIGHT]の画面で誤検出した時用の処理をしているのでその画面で保存されなければ、全くに近いほど検出されなかった事を示しているので、原因が知りたい場合は作者にlogを提出してみてください
 
 ## Author/Licence
 - [Humi@bass_clef_](https://twitter.com/bass_clef_)
 - [GPLv3](https://www.gnu.org/licenses/gpl-3.0.html)
-
 - [Tesseract-OCR](https://github.com/tesseract-ocr/tesseract#license)
+- [大乱闘スマッシュブラザーズ SPECIAL](https://www.smashbros.com/ja_JP/)  
+    smabrog に使用しているゲーム内画像の著作権、商標権その他の知的財産権は、当該コンテンツの提供元に帰属します
+
+## Special Thanks
+- カービィを使って youtube に動画を上げてくれた方々、デバッグに大変お世話になりました！
 
 ## log
     ver = major.minor.build
@@ -120,3 +129,14 @@ smabrog
     - 一部の戦歴をアニメーションで表示するようにしました
 - 2020/4/3  
     ver 0.6 release
+- 2020/4/6  
+    「再戦しますか」のフレームが検出される値を97%から98%にしました
+- 2020/4/7  
+    - ストックと制限時間を試合開始のフレームで検出するようにしました
+    - 画像の保存を別プロセスでするようにしました
+- 2020/4/8  
+    グラフが正常な値で描画されるようにしました
+- 2020/4/9  
+    戦歴をキャラクター別で取得するようにしました
+- 2020/4/10  
+    ver 0.7 release

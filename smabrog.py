@@ -6,25 +6,25 @@ Auther : Humi@bass_clef_
 
 """
 
-import cv2
+from collections import Counter, defaultdict, OrderedDict
 from ctypes import *
 from ctypes.wintypes import *
+import cv2
 import datetime
-from collections import defaultdict
 import concurrent.futures
 import difflib
 from enum import IntEnum
 from forbiddenfruit import curse
-from PIL import Image, ImageDraw, ImageFont, ImageGrab
 import japanize_matplotlib
 import json
 import logging
 import matplotlib
+from matplotlib import animation
 import matplotlib.pyplot as plt
 import numpy
-from collections import OrderedDict
 import os
 from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont, ImageGrab
 import pyocr
 import pyocr.builders
 import random
@@ -185,13 +185,14 @@ class SmaBroEngine:
 		self.team_color_list = ['red', 'blue', 'yellow', 'green']
 		self.resource_size = { 'width':640, 'height':360 }
 		self.battle_rate = defaultdict()
+		self.back_character = ''
 		self.back_power = 0
 		self.battle_streak_rate = 0	# 正数で連勝数,負数で連敗数
-		self.battle_history = []
-		self.power_history = []
+		self.battle_history = {}
+		self.power_history = {}
 		self.power_limit = { 'min':-1, 'max':-1 }
 		self.battle_streak_ratio = [{}]
-		#self.time_zero = datetime.datetime(1900, 1, 1, 0, 0)
+		self.time_zero = datetime.datetime(1900, 1, 1, 0, 0)
 		self.animation_count = 0
 		self.animation_calc = 0
 		self.animation_image = None
@@ -218,6 +219,8 @@ class SmaBroEngine:
 			self.group_team_color[color] = cv2.imread(+f'resource/group_team_{color}_color.png')
 		self.rule_smash_color = cv2.imread(+'resource/rule_smash_color.png')
 		self.rule_smash_or_team_mask = cv2.imread(+'resource/rule_smash_or_team_mask.png')
+		self.rule_time_stock_mask = cv2.imread(+'resource/rule_time_stock_mask.png')
+		self.rule_time_stock_color = cv2.imread(+'resource/rule_time_stock_color.png')
 
 		self.battle_time_zero_mask = cv2.imread(+'resource/battle_time_zero_mask.png', cv2.IMREAD_UNCHANGED)
 		self.battle_time_zero_color = cv2.imread(+'resource/battle_time_zero_color.png')
@@ -261,8 +264,8 @@ class SmaBroEngine:
 		self.smabro_icon = cv2.imread(+'resource/smabro_icon.png', cv2.IMREAD_UNCHANGED)
 
 		# フォント
-		self.font = ImageFont.truetype('C:/Windows/Fonts/msgothic.ttc', 20)
-		self.small_font = ImageFont.truetype('C:/Windows/Fonts/msgothic.ttc', 14)
+		self.font = ImageFont.truetype(self.config['resource']['font']['normal'][0], self.config['resource']['font']['normal'][1])
+		self.small_font = ImageFont.truetype(self.config['resource']['font']['small'][0], self.config['resource']['font']['small'][1])
 
 	# 初期化後起動のみ
 	def _load_first_only(self):
@@ -390,7 +393,20 @@ class SmaBroEngine:
 
 	# 結果画面が正常に捕捉できなかった場合の救済措置
 	def _research_battle_result(self):
-		# 	順位を -1 から N に変更
+		# 異常な戦闘力
+		# 直近10試合の平均の戦闘力から 100万以上離れていた場合,戦闘力を誤検出として記録 (数字が増えてしまう誤検出)
+		# 相手の戦闘力も自身と近いはずなので,それも誤検出として扱う
+		if (9 < len( self.power_history[self.chara_name[0]] )):
+			power_history = self.power_history[self.chara_name[0]][::-1]
+			power_history = power_history[0:10]
+			power = numpy.array(power_history)[:,1].tolist()
+			for i in range(self.player_count):
+				if ( 1e6 < abs(numpy.mean(power) - self.power[i]) ):
+					self.logger.debug(f'player power is impossible value {self.power[i]} -> 0')
+					self.power[i] = 0
+
+
+		# 順位を -1 から N に変更
 		order_remain = [ (player+1) for player in range(self.player_count) if not (player+1) in self.player_order ]
 		if (1 < len(order_remain)):
 			# わからない順位が複数ある
@@ -401,19 +417,10 @@ class SmaBroEngine:
 			self.logger.debug(f'player order no anything changed. {self.player_order}')
 			return
 
-		min_order = min(self.player_order)
-		if (all([ min_order == order for order in self.player_order ])):
-			# 全プレイヤーが同じ順位 (正常なストックから推測)
-			if ('stock' == self.rule_name):
-				lowest = int(numpy.argmax(self.player_order))
-				highest = int(numpy.argmin(self.player_order))
-			elif ('time' == self.rule_name):
-				pass
-		else:
-			# かけている順位が一つ (他の順位から推測)
-			player = int(numpy.argmin(self.player_order))
-			self.player_order[player] = order_remain[0]
-			self.logger.debug(f'player order changed. {player} -> {order_remain[0]}th')
+		# かけている順位が一つ (他の順位から推測)
+		player = int(numpy.argmin(self.player_order))
+		self.player_order[player] = order_remain[0]
+		self.logger.debug(f'player order changed. {player} -> {order_remain[0]}th')
 
 	# 1pプレイヤー目線のキャラ別勝敗数を蓄える
 	def _store_battle_rate(self, chara_name, win=0, lose=0):
@@ -425,6 +432,10 @@ class SmaBroEngine:
 
 		self.battle_rate[key]['win'] += win
 		self.battle_rate[key]['lose'] += lose
+
+		if (not chara_name[0] in self.battle_history or not chara_name[0] in self.power_history):
+			self.battle_history[chara_name[0]] = []
+			self.power_history[chara_name[0]] = []
 		
 		plus = 1 if 0 < win else -1 if 0 < lose else 0
 		if (0 == plus):
@@ -434,31 +445,35 @@ class SmaBroEngine:
 			# 計算後の値が現在の絶対値より小さくなる場合 連hoge が切れたことになるのでリセットする
 			self.battle_streak_rate = 0
 		self.battle_streak_rate += plus
-		self.battle_history.append(plus)
+		self.battle_history[chara_name[0]].append(plus)
 
 		if (10000 < self.power[0]):
 			# ごめん 1万以下は人権ないかも… (誤検出を省く)
-			self.power_history.append( [len(self.battle_history), self.power[0]] )
+			self.power_history[chara_name[0]].append( [len(self.battle_history[chara_name[0]]), self.power[0]] )
 
-		if ( 2 < len(self.battle_history) ):
+		battle_streak_ratio_max = self.config['option']['battle_streak_ratio_max']
+		if ( 2 < len(self.battle_history[chara_name[0]]) ):
 			# N戦の勝率
-			battle_streak_ratio_max = self.config['option']['battle_streak_ratio_max']
 			self.battle_streak_ratio = [{'win':0.0, 'lose':0.0, 'length':0} for _ in battle_streak_ratio_max]
-			total_count = len(self.battle_history)
+			total_count = len(self.battle_history[chara_name[0]])
 			if (0 < total_count):
-				self.battle_history = self.battle_history[::-1]
+				battle_history = self.battle_history[chara_name[0]][::-1]
 				for key, battle_max in enumerate(battle_streak_ratio_max):
-					count = min(total_count, len(self.battle_history[0:battle_max]) )
+					count = min(total_count, len(battle_history[0:battle_max]) )
 					win_count = lose_count = 0
-					for result in self.battle_history[0:count]:
+					for result in battle_history[0:count]:
 						win_count += 1 if 0 < result else 0
 						lose_count += 1 if result < 0 else 0
 
 					self.battle_streak_ratio[key]['win'] = round(win_count / count * 100.0, 1)
 					self.battle_streak_ratio[key]['lose'] = round(lose_count / count * 100.0, 1)
 					self.battle_streak_ratio[key]['length'] = count
+		else:
+			for key, battle_max in enumerate(battle_streak_ratio_max):
+				self.battle_streak_ratio[key]['win'] = 0
+				self.battle_streak_ratio[key]['lose'] = 0
+				self.battle_streak_ratio[key]['length'] = 0
 
-				self.battle_history = self.battle_history[::-1]
 
 	# 勝敗の保存 (stock戦)
 	def _stock_rate(self):
@@ -540,10 +555,11 @@ class SmaBroEngine:
 	def _load_history(self):
 		po = Path('./log/')
 		history_pattern = self.config['log']['name'].format(now=r'\d+', chara=r'\S+')
+
 		dirlist = [file for file in po.glob('*.json') if re.search(history_pattern, str(file))]
-		for history_file in dirlist:
-			Utils.width_full_print(f'\r{history_file}')
-			with open(history_file) as f:
+		for history_path in dirlist:
+			Utils.width_full_print(f'\r{history_path}')
+			with open(history_path) as f:
 				try:
 					history_file = json.load(f)
 					player_info = history_file['player']
@@ -581,7 +597,7 @@ class SmaBroEngine:
 				'name': self.rule_name,
 				'group': self.group_name,
 				'stock': self.result_stock['max'],
-				'time': 0
+				'time': [f'{t.minute:02}:{t.second:02}.{t.microsecond:02}' for t in self.battle_time]
 			},
 			'player': player
 		}
@@ -610,6 +626,7 @@ class SmaBroEngine:
 	def _default_battle_params(self, player_count=2):
 		self.ratio = 0.0
 		self.player_order_ratio = [0.99] * player_count
+		self.time_stock_ratio	= []
 
 		self.frame_state		= FrameState.FS_UNKNOWN
 		self.entry_name			= [''] * player_count
@@ -617,7 +634,7 @@ class SmaBroEngine:
 		self.group_name			= 'smash'	# smash or team
 		self.group_color		= [''] * player_count
 		self.chara_name			= [''] * player_count
-		self.battle_time		= [datetime.datetime(1900, 1, 1, 0, 0) for _ in range(2)]	# MM:SS.MS の書式
+		self.battle_time		= [datetime.datetime(1900, 1, 1, 0, 0) for _ in range(2)]
 		self.player_damage		= [-1.0] * player_count
 		self.defeated_player	= [-1] * player_count
 		self.result_stock		= {'max':[-1] * player_count, 'count':[-1] * player_count}
@@ -763,39 +780,55 @@ class SmaBroEngine:
 
 		self.logger.info('with%s=%s=>%s,%s', self.player_count, chara_name, self.chara_name, name_ratio)
 
-	# [GO!]画面の右上の [.00] の数字
-	def _capture_go_frame(self, capture_gray_image):
-		# 開始時間が不定なので,最初の数字を取得してそれを開始時間とする
-		convert_image = cv2.bitwise_and(capture_gray_image, self.battle_time_mask)
-		_, mask_image = cv2.threshold(convert_image, 200, 255, cv2.THRESH_BINARY)
+	# [時計マーク] {N}:00 [人マーク] {P} 画面
+	def _capture_time_stock_frame(self, capture_gray_image):
+		#self.logger.debug(f'_capture_time_stock{self.ratio}')
 
-		gray_convert_image = cv2.bitwise_and(capture_gray_image, mask_image)
-		battle_time_area_image, _ = Utils.trimming_any_rect(
-			capture_gray_image, gray_convert_image, 0, 1e2, filled=True)
+		time_stock_pos = { 'time':[275, 333], 'stock':[358, 333] }
+		num = {'time':-1, 'stock':-1}
+		for key, pos in time_stock_pos.items():
+			area_image = capture_gray_image[ pos[1]:pos[1]+15, pos[0]:pos[0]+10 ]
+			_, mask_image = cv2.threshold(area_image, 100, 255, cv2.THRESH_BINARY)
+			mask_image = cv2.bitwise_and(area_image, mask_image)
 
-		_, convert_image = cv2.threshold(battle_time_area_image, 200, 255, cv2.THRESH_BINARY_INV)
+			area_image = cv2.bitwise_not(area_image)
+			area_image, _ = Utils.trimming_any_rect(
+				area_image, mask_image, 2, 5, filled=True)
 
-		gray_convert_image = cv2.bitwise_not(battle_time_area_image)
-		battle_time_area_image = cv2.bitwise_and(gray_convert_image, convert_image)
-		#		battle_time_area_image = cv2.bitwise_not(battle_time_area_image)
+			#cv2.imshow(f'_capture_time_stock_frame_{key}', area_image)
+			n = self.ocr_tool.image_to_string(
+				Utils.cv2pil(area_image), lang='eng',
+				builder=pyocr.builders.DigitBuilder(tesseract_layout=10) )
 
-		#		battle_time_area_image, _ = Utils.trimming_any_rect(
-		#			battle_time_area_image, convert_image, 2, 1e3, filled=True, fill_color=[0,0,0])
+			try:
+				num[key] = int(n)
+			except ValueError:
+				pass
 
-		cv2.imshow('battle_time_area_image', gray_convert_image)
+		time = stock = -1
+		if (any([ -1 != n for n in num.values() ])):
+			for k, v in enumerate(num.items()):
+				if (-1 == v):
+					num = num.pop(k, None)
+			num = { k:v for k, v in num.items() if -1 != v }
+			self.time_stock_ratio.append(num)
 
-		time = self.ocr_tool.image_to_string(
-			Utils.cv2pil(battle_time_area_image), lang='eng',
-			builder=pyocr.builders.DigitBuilder(tesseract_layout=6) )
-		Utils.width_full_print(f'\rtime={time}')
+			# 一番検出された回数が多いものをそれとする
+			time_list = list(Counter(n['time'] for n in self.time_stock_ratio if 'time' in n).keys())
+			if (0 < len(time_list)):
+				time = time_list[0]
+			stock_list = list(Counter(n['stock'] for n in self.time_stock_ratio if 'stock' in n).keys())
+			if (0 < len(stock_list)):
+				stock = stock_list[0]
 
-		try:
-			if (0 == int(time)):
-				return
-		except ValueError:
-			return
+			if ( time != self.battle_time[0].minute and time in [3,5,7] ):
+				self.battle_time[0] = datetime.datetime(1900, 1, 1, 0, time)
+				self.logger.debug(f' better {time}:{stock} <= {num}:{self.time_stock_ratio}')
 
-		self.battle_time[0] = datetime.datetime(1900, 1, 1, 0, int(time[0]))
+			if ( stock != self.result_stock['max'][0] and stock in [1,2,3] ):
+				self.result_stock['max'] = [stock] * self.player_count
+				self.result_stock['count'] = self.result_stock['max']
+				self.logger.debug('stock max=%s', self.result_stock['max'])
 
 	# [N - N]画面
 	def _capture_stock_number_frame(self, capture_gray_image):
@@ -989,6 +1022,12 @@ class SmaBroEngine:
 		self.ratio = round(float(self.ratio), 3)
 		return 0.98 <= self.ratio
 
+	# [時計マーク] {N}:00 [人マーク] {P} 画面
+	def _is_time_stock_frame(self, capture_image):
+		self.ratio, _ = Utils.match_masked_color_image(capture_image, self.rule_time_stock_color, self.rule_time_stock_mask, is_trans=True)
+		self.ratio = round(float(self.ratio), 3)
+		return 0.99 <= self.ratio
+
 	# プレイヤー毎の [0.0%] を監視
 	def _watch_player_zero_damage(self, capture_image):
 		convert_image = capture_image
@@ -1121,7 +1160,7 @@ class SmaBroEngine:
 				self.player_order[player] = int( 1 + order )
 				self.logger.info('player,order,power=%s,%s,%s', player, self.player_order[player], self.power[player])
 
-		if ( all([-1 != order for order in self.player_order]) and any([ 1000 < power for power in self.power ]) ):
+		if ( all([-1 != order for order in self.player_order]) and any([ 10000 < power for power in self.power ]) ):
 			return True
 
 		return False
@@ -1134,7 +1173,7 @@ class SmaBroEngine:
 
 		self.ratio, _ = Utils.match_masked_color_image(capture_image, self.battle_retry_color, self.battle_retry_mask)
 		self.ratio = round(float(self.ratio), 3)
-		return 0.97 <= self.ratio
+		return 0.98 <= self.ratio
 
 	# frame がどこかを特定して応じて処理をする
 	def _capture_any_frame(self, capture_image):
@@ -1189,7 +1228,8 @@ class SmaBroEngine:
 				if (self._is_vs_frame(capture_image)):
 					self.frame_state = FrameState.FS_WHAT_CHARACTER
 					self._capture_character_name(gray_image)
-					cv2.imwrite('last_foo_vs_bar.png', capture_image)
+					with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executer:
+						_ = list(executer.map(cv2.imwrite, ['last_vs_character.png'], [capture_image]))
 
 			elif (4 == self.player_count):
 				# 大乱闘 or チーム乱闘 (smash or team,キャラクター名)
@@ -1197,7 +1237,8 @@ class SmaBroEngine:
 				if (is_smash_or_team_frame):
 					self.frame_state = FrameState.FS_WHAT_CHARACTER
 					self._capture_character_name(gray_image)
-					cv2.imwrite('last_vs_character.png', capture_image)
+					with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executer:
+						_ = list(executer.map(cv2.imwrite, ['last_vs_character.png'], [capture_image]))
 			return
 
 		if (self.frame_state == FrameState.FS_WHAT_CHARACTER):
@@ -1205,7 +1246,11 @@ class SmaBroEngine:
 			if (self._is_go_frame(capture_image)):
 				self.logger.debug(f'_is_go_frame{self.ratio}')
 				self.frame_state = FrameState.FS_BATTLE
-				# self._capture_go_frame(gray_image)		
+
+			# [時計マーク] {N}:00 [人マーク] {P} 画面
+			if (self._is_time_stock_frame(capture_image)):
+				self._capture_time_stock_frame(gray_image)
+
 			return
 
 		if (self.frame_state == FrameState.FS_BATTLE):
@@ -1238,7 +1283,8 @@ class SmaBroEngine:
 			if (is_result_frame):
 				self._battle_end()
 				self.frame_state = FrameState.FS_RESULT
-				cv2.imwrite('last_foo_vs_bar_power.png', capture_image)
+				with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executer:
+					_ = list(executer.map(cv2.imwrite, ['last_foo_vs_bar_power.png'], [capture_image]))
 
 			return
 
@@ -1254,6 +1300,7 @@ class SmaBroEngine:
 				base_char += 1
 		player_info = dict(zip( tuple(chara_name), list(zip( self.result_stock['count'], self.group_color )) ))
 		battle_information_text = {}
+		streak_name = (self.config['option']['battle_information']['streak_loses'] if self.battle_streak_rate < 0 else self.config['option']['battle_information']['streak_wins'])
 		for name in ['gui_text', 'cui_text']:
 			battle_information_text[name] = self.config['option']['battle_information'][name].format(
 					frame=FrameState(self.frame_state + 1).name, ratio=self.ratio,
@@ -1263,19 +1310,29 @@ class SmaBroEngine:
 					player_info=f'{player_info}',
 					battle_rate=self.battle_rate[tuple(self.chara_name)],
 					streak=abs(self.battle_streak_rate),
-					streak_name=('lose' if self.battle_streak_rate < 0 else 'win'),
+					streak_name=streak_name,
 					streak_ratio=self.battle_streak_ratio
 				)
 
 		if (self.config['option']['battle_informationGUI']):
 			self.gui_info['image'] = Image.fromarray(self.gui_info['image'])
-			draw = ImageDraw.Draw(self.gui_info['image'])
 
-			draw.text(
-				tuple(self.config['option']['battle_information']['pos']),
-				battle_information_text['gui_text'], font=self.font,
+			draw = ImageDraw.Draw(self.gui_info['image'])
+			pos = tuple(self.config['option']['battle_information']['pos'])
+			if ( self.config['option']['battle_information']['bold'] != self.config['option']['battle_information']['back'] ):
+				# bold に背景色でない色を指定すると bold もどきにする
+				for y in [-1, 1]:
+					for x in [-1, 1]:
+						txt = draw.text(
+							(pos[0] + x, pos[1] + y),
+							battle_information_text['gui_text'], font=self.font,
+							fill=tuple(self.config['option']['battle_information']['bold'])
+							)
+			txt = draw.text(
+				pos, battle_information_text['gui_text'], font=self.font,
 				fill=tuple(self.config['option']['battle_information']['color'])
 				)
+
 			self.gui_info['image'] = numpy.array(self.gui_info['image'])
 			self.gui_info['image'] = Utils.pil2cv(self.gui_info['image'])
 
@@ -1288,23 +1345,21 @@ class SmaBroEngine:
 	def _animation_what_character(self, capture_image):
 		win = self.battle_rate[tuple(self.chara_name)]['win']
 		lose = self.battle_rate[tuple(self.chara_name)]['lose']
-		total = win+lose
 		if (0 <= self.animation_count):
 			# グラフの作成,および試合数 0 からの遷移
-			plt.gca().clear()
-			lose = int(lose/5 * (5-self.animation_count))
-			win = int(win/5 * (5-self.animation_count))
-			other = int(1/10 * self.animation_count )
+			self._make_interface_canvas(capture_image)
+
 			self.gui_info['ax'].pie(
-				numpy.array([lose, win, other]),
-				labels=['']*3,
+				numpy.array([lose, win]),
+				labels=['']*2,
 				counterclock=False, startangle=90, radius=0.2, labeldistance=1.0,
 				wedgeprops={'linewidth': 2, 'edgecolor':"black"},
-				colors=['lightblue', 'pink', 'black'], textprops={'color':'white'})
+				colors=['lightblue', 'pink'], textprops={'color':'white'})
+
 			self.gui_info['fig'].canvas.draw()
 
 			image = numpy.array(self.gui_info['fig'].canvas.renderer.buffer_rgba())
-			image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+			image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
 			# グラフの部分だけ取り出して,
 			h, w = image.shape[0:2]
 			image = image[ int(h/3+2):int(h/3*2+2), int(w/5*2+8):int(w/5*3+8) ]	# matplotlibのグラフなんで中央に描画してくれないん？？？
@@ -1355,23 +1410,22 @@ class SmaBroEngine:
 		if (50 == self.animation_count):
 			self.animation_image = numpy.zeros(capture_image.shape, dtype=numpy.uint8)
 
-		if (40 == self.animation_count):
-			battle_streak_ratio_max = self.config['option']['battle_streak_ratio_max']
-			self.power_history = self.power_history[::-1]
-			self.power_history = self.power_history[0:battle_streak_ratio_max[0]]
-			self.power_history = self.power_history[::-1]
+		battle_streak_ratio_max = self.config['option']['battle_streak_ratio_max']
+		change_count = 40 / len(battle_streak_ratio_max)
+		if (0 == self.animation_count % change_count):
+			streak_max = battle_streak_ratio_max[int(40 / self.animation_count - 1)]
+			power_history = self.power_history[self.chara_name[0]][::-1]
+			power_history = power_history[0:streak_max]
 
-			length = len(self.power_history)
-			num = numpy.array(self.power_history)[:,0]	# 試合番号
-			power = numpy.array(self.power_history)[:,1]	# 戦闘力
+			num = numpy.array(power_history)[:,0]	# 試合番号
+			power = numpy.array(power_history)[:,1]	# 戦闘力
 
-			p10 = [p/10000 for p in power]
-			plt.gca().clear()
-			self.gui_info['ax'].plot( num, p10, marker='.', color='pink', label='世界戦闘力')
+			self._make_interface_canvas(capture_image)
+			self.gui_info['ax'].plot(num, power, marker='.', color='pink', label='世界戦闘力の推移')
 
-			self.gui_info['ax'].set_xlabel('試合数')
-			self.gui_info['ax'].set_ylabel('世界戦闘力(万) (戦闘力 ÷ 10000)')
-			self.gui_info['ax'].set_title('勝率 - win rate')
+			self.gui_info['ax'].set_xlabel(f'試合数')
+			self.gui_info['ax'].set_ylabel('世界戦闘力')
+			self.gui_info['ax'].set_title(f'{self.chara_name[0]}の勝率 直近({streak_max}戦)', color='white')
 			self.gui_info['ax'].xaxis.label.set_color('gray')
 			self.gui_info['ax'].yaxis.label.set_color('gray')
 			self.gui_info['ax'].tick_params(axis='x', colors='gray')
@@ -1380,14 +1434,15 @@ class SmaBroEngine:
 			axlegend.get_frame().set_edgecolor('#CFCFCF')
 			for axtext in axlegend.get_texts():
 			    axtext.set_color('gray')
+
 			self.gui_info['fig'].canvas.draw()
 			image = numpy.array(self.gui_info['fig'].canvas.renderer.buffer_rgba())
-			self.animation_image = cv2.cvtColor(image, cv2.COLOR_BGRA2RGB)
+			self.animation_image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
 
 		self.animation_count -= 1 if 0 < self.animation_count else 0
 
 		self.gui_info['image'] = cv2.addWeighted(self.gui_info['image'], 1,
-			self.animation_image, 1, 0)		
+			self.animation_image, 1, 0)
 
 	# アニメーション が主な情報
 	def _user_interface_animation(self, capture_image):
@@ -1397,39 +1452,54 @@ class SmaBroEngine:
 			# 非対応
 			return
 
-		if (FrameState.FS_READY_OK == self.frame_state):
+		if (FrameState.FS_READY_OK == self.frame_state and 4 != self.animation_count):
 			self.animation_count = 4 # _animation_what_character に必要な初期化
 
 		# [VS]画面中に キャラ別勝率を表示する
 		if (FrameState.FS_WHAT_CHARACTER == self.frame_state and -10 < self.animation_count):
 			self._animation_what_character(capture_image)
 
-		if (FrameState.FS_BATTLE_END == self.frame_state):
+		if (FrameState.FS_BATTLE_END == self.frame_state and 50 != self.animation_count):
 			self.animation_count = 50 # _animation_what_character に必要な初期化
 
-		if (FrameState.FS_RETRY == self.frame_state and 2 < len(self.power_history) and 0 < self.animation_count):
+		if (FrameState.FS_RETRY == self.frame_state and 2 < len(self.power_history[self.chara_name[0]]) and 0 < self.animation_count):
 			self._animation_retry(capture_image)
 
+	# guiやanimationのための基盤の作成
+	def _make_interface_canvas(self, capture_image):
+		if (self.gui_info is None):
+			gui_image = numpy.zeros(capture_image.shape, dtype=numpy.uint8)
+			gui_image[:] = tuple(self.config['option']['battle_information']['back'])
+			gui_image = numpy.array(gui_image)
+			gui_image = Utils.pil2cv(gui_image)
+		else:
+			gui_image = self.gui_info['image']
+
+		# figure,axesの削除、塗りつぶし
+		plt.gcf().clear()
+		plt.gca().clear()
+		gui_image[:] = tuple(self.config['option']['battle_information']['back'])
+		fig, ax = plt.subplots(
+			figsize=(self.resource_size['width']/100, self.resource_size['height']/100), dpi=100,
+			facecolor=tuple(self.config['option']['battle_information']['back'])
+			)
+		ax.patch.set_facecolor( tuple(self.config['option']['battle_information']['back']) )
+
+		self.gui_info = { 'image':gui_image, 'fig':fig, 'ax':ax }
+
 	# バトル中に表示する情報
-	def _user_interface(self, images):
-		capture_image = Utils.pil2cv(images)
-		if (self.config['option']['battle_informationGUI']):
+	def _user_interface(self, capture_image):
+		if (self.config['option']['battle_informationGUI'] or self.config['option']['battle_information_animation']):
 			if (self.gui_info is None):
-				gui_image = numpy.zeros(capture_image.shape, dtype=numpy.uint8)
-				gui_image[:] = tuple(self.config['option']['battle_information']['back'])
-				fig, ax = plt.subplots(
-					figsize=(capture_image.shape[1]/100, capture_image.shape[0]/100), dpi=100,
-					facecolor=tuple(self.config['option']['battle_information']['back'])
-					)
-				self.gui_info = { 'image':gui_image, 'fig':fig, 'ax':ax }
+				self._make_interface_canvas(capture_image)
 			else:
 				self.gui_info['image'][:] = tuple(self.config['option']['battle_information']['back'])
 
-
-		self._user_interface_text(capture_image)
 		self._user_interface_animation(capture_image)
+		self._user_interface_text(capture_image)
 
 		if (self.config['option']['battle_informationGUI']):
+			plt.close()
 			cv2.imshow(self.config['option']['battle_information']['caption'], self.gui_info['image'])
 
 
