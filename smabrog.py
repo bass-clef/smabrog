@@ -469,7 +469,6 @@ class SmaBroEngine:
 					self.battle_streak_ratio[key]['lose'] = round(lose_count / count * 100.0, 1)
 					self.battle_streak_ratio[key]['length'] = count
 
-
 	# 勝敗の保存 (stock戦)
 	def _stock_rate(self):
 		if ( all([-1 == player for player in self.result_stock['count']]) ):
@@ -1559,8 +1558,8 @@ class SmaBroEngine:
 			self._main_loop()
 		except KeyboardInterrupt:
 			pass
-		except Exception as e:
-			self._dump(e)
+#		except Exception as e:
+#			self._dump(e)
 		finally:
 			self._finalize()
 
