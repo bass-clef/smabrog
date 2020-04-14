@@ -3,10 +3,10 @@
         "capture": {
             "title": "",
             "title_back": "MonsterX U3.0R",
-            "width": 640,
-            "height": 360,
-            "x": 30,
-            "y": 706
+            "width": 848,
+            "height": 477,
+            "x": 70,
+            "y": 68
         },
         "log": {
             "headers": {
@@ -17,6 +17,7 @@
             "path_back": "https://httpbin.org/post"
         },
         "option": {
+            "max_workers": 4,
             "battle_information": {
                 "caption": "battle_information",
                 "back": [
@@ -47,7 +48,7 @@
                 "streak_wins": "連勝",
                 "streak_loses": "連敗"
             },
-            "battle_informationCUI": false,
+            "battle_informationCUI": true,
             "battle_informationGUI": true,
             "battle_information_animation": true,
             "battle_streak_ratio_max": [
@@ -57,7 +58,7 @@
             "exit_not_found_capture": false,
             "find_capture_area": true,
             "found_capture_area_fixed": false,
-            "every_time_find_capture_area": false
+            "every_time_find_capture_area": true
         },
         "resource": {
             "font": {

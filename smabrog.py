@@ -185,7 +185,7 @@ class SmaBroEngine:
 		self.team_color_list = ['red', 'blue', 'yellow', 'green']
 		self.resource_size = { 'width':640, 'height':360 }
 		self.capture_image = None
-		self.count = 0
+		self.sync = 0
 		self.battle_rate = defaultdict()
 		self.back_character = ''
 		self.back_power = 0
@@ -204,10 +204,15 @@ class SmaBroEngine:
 		self.loading_mask = cv2.imread(+'resource/loading_mask.png')
 		self.loading_color = cv2.imread(+'resource/loading_color.png')
 
-		self.ready_to_fight_mask = cv2.imread(+'resource/ready_to_fight_mask.png', cv2.IMREAD_UNCHANGED)
-		self.ready_to_fight_color = list(range(2))
+		self.ready_to_fight_trans_mask = cv2.imread(+'resource/ready_to_fight_mask.png', cv2.IMREAD_UNCHANGED)
+		self.ready_to_fight_trans_color = list(range(2))
 		for i in range(2):
-			self.ready_to_fight_color[i] = cv2.imread(+f'resource/ready_to_fight_color_{i}.png', cv2.IMREAD_UNCHANGED)
+			self.ready_to_fight_trans_color[i] = cv2.imread(+f'resource/ready_to_fight_color_{i}.png', cv2.IMREAD_UNCHANGED)
+		self.ready_to_fight_mask = cv2.cvtColor(self.ready_to_fight_trans_mask, cv2.COLOR_RGBA2RGB)
+		self.ready_to_fight_color = list(range(2))
+		for key, color_image in enumerate(self.ready_to_fight_trans_color):
+			self.ready_to_fight_color[key] = cv2.cvtColor(color_image, cv2.COLOR_RGBA2RGB)
+
 		self.ready_to_fight_name_power_mask = cv2.imread(+'resource/ready_to_fight_name_power_mask.png')
 
 		self.ready_ok_mask = cv2.imread(+'resource/ready_ok_mask.png')
@@ -272,106 +277,130 @@ class SmaBroEngine:
 		self.font = ImageFont.truetype(self.config['resource']['font']['normal'][0], self.config['resource']['font']['normal'][1])
 		self.small_font = ImageFont.truetype(self.config['resource']['font']['small'][0], self.config['resource']['font']['small'][1])
 
-		self.executor = concurrent.futures.ThreadPoolExecutor()
-
-	# 初期化後起動のみ
-	def _load_first_only(self):
-		if ( 0 == self.config['capture']['width'] or 0 == self.config['capture']['height'] ):
-			base_resolution = [16, 9]
-			# 40, 80, 100, 120
-			for magnification in [40, 53, 80, 100, 120] + list(range(41, 53)) + list(range(54, 80)) + list(range(81, 100)) + list(range(101, 120)):
-				self.config['option']['find_capture_area'] = True
-				self.config['option']['exit_not_found_capture'] = False
-				resolution = [ base_resolution[0] * magnification, base_resolution[1] * magnification ]
-				self.config['capture']['width'] = resolution[0]
-				self.config['capture']['height'] = resolution[1]
-				self._init_capture_window(in_loop=True)
-				Utils.width_full_print(f'\rsearch... {resolution[0]}x{resolution[1]} - {self.ratio}%')
-				if (0.99 <= self.ratio):
-					break
-
-			if (121 != base_resolution):
-				Utils.width_full_print(
-					f"resolution is {self.config['capture']['width']}x{self.config['capture']['height']}",
-					logger_func=self.logger.info)
+		self.executor = concurrent.futures.ThreadPoolExecutor(self.config['option']['max_workers'])
 
 	# キャプチャに関する初期化
-	def _init_capture_window(self, in_loop=False):
+	def _init_capture_area(self):
+		if (not self.config['option']['find_capture_area']):
+			return
+		if (self.config['option']['every_time_find_capture_area']):
+			self.config['capture']['width'] = self.config['capture']['height'] = 0
+
+		resolution_list = [ [self.config['capture']['width'],self.config['capture']['height']] ]
+		if ( 0 == self.config['capture']['width'] or 0 == self.config['capture']['height'] ):
+			base_resolution = [16, 9]
+			magnification_list = [40, 53, 80, 100, 120] + list(range(41, 53)) + list(range(54, 80)) + list(range(81, 100)) + list(range(101, 120))
+			resolution_list = list(range(len(magnification_list)))
+			for key, m in enumerate(magnification_list):
+				resolution_list[key] = [ int(base_resolution[0] * m), int(base_resolution[1] * m) ]
+
+			self.config['option']['find_capture_area'] = True
+			self.config['option']['exit_not_found_capture'] = False
+			Utils.width_full_print(f'\rfinding capture area...')
+
+
 		# このためだけに透過色付きで読み込んでいたので,今後のために RGBA -> RGB 変換をする
-		ready_to_fight_trans_mask = self.ready_to_fight_mask.copy()
-		ready_to_fight_trans_color = self.ready_to_fight_color.copy()
-		for key, color_image in enumerate(self.ready_to_fight_color):
-			self.ready_to_fight_color[key] = cv2.cvtColor(color_image, cv2.COLOR_RGBA2RGB)
-		self.ready_to_fight_mask = cv2.cvtColor(self.ready_to_fight_mask, cv2.COLOR_RGBA2RGB)
+		self.sync = -1
+		with concurrent.futures.ThreadPoolExecutor(self.config['option']['max_workers']) as executor:
+			result = list(executor.map(
+				self._find_resolution, range(len(resolution_list)), resolution_list
+				))
 
+		if (-1 != self.sync):
+			ratio, x, y = result[self.sync]
+			width, height = resolution_list[self.sync]
+
+			self.logger.info(f'found capture area {x}x{y}')
+			self.config['capture']['x'] = x
+			self.config['capture']['y'] = y
+			self.config['capture']['width'] = width
+			self.config['capture']['height'] = height
+
+			if (self.config['option']['every_time_find_capture_area']):
+				Utils.width_full_print( f"resolution is {width}x{height}", logger_func=self.logger.info )
+			if (self.config['option']['found_capture_area_fixed']):
+				self.config['option']['find_capture_area'] = False
+
+			self._capture_window()
+			cv2.imwrite('found_capture_area.png', self.capture_image)
+
+		if ( -1 == self.sync or 0 == self.config['capture']['width'] or 0 == self.config['capture']['height'] ):
+			Utils.width_full_print('not found capture area.')
+			if (self.config['option']['exit_not_found_capture']):
+				Utils.width_full_print('exit_not_found_capture true.')
+				raise KeyboardInterrupt()
+
+			if (self.config['option']['every_time_find_capture_area']):
+				raise KeyboardInterrupt()
+
+	# キャプチャ対象の解像度の検出
+	def _find_resolution(self, index, resolution):
+		if (-1 != self.sync):
+			time.sleep(0.0001)
+			return 0.0, None, 0, 0, 0, 0
+
+		ratio, convert_image, x, y = self._find_capture_area(resolution[0], resolution[1])
+		if (ratio < 0.99):
+			return 0.0, None, 0, 0, 0, 0
+
+		self.sync = index
+		self.capture_image = convert_image
+		return ratio, x, y
+
+	# キャプチャすべき場所の検出
+	def _find_capture_area(self, width, height):
 		# [READY to FIGHT]によって自動判別
-		self.ratio = 0.0
-		if (self.config['option']['find_capture_area']):
-			desktop_width = ctypes.windll.user32.GetSystemMetrics(0)
-			desktop_height = ctypes.windll.user32.GetSystemMetrics(1)
-			capture_erea = (0, 0, desktop_width, desktop_height)
-			self.capture_image = Utils.pil2cv(ImageGrab.grab(bbox=capture_erea))
-			convert_image = self.capture_image
-			width = int(self.config['capture']['width'])
-			height = int(self.config['capture']['height'])
+		result_ratio = 0.0
+		desktop_width = ctypes.windll.user32.GetSystemMetrics(0)
+		desktop_height = ctypes.windll.user32.GetSystemMetrics(1)
+		capture_erea = (0, 0, desktop_width, desktop_height)
+		capture_image = Utils.pil2cv(ImageGrab.grab(bbox=capture_erea))
+		convert_image = capture_image
 
-			width_magnification = 1.0
-			height_magnification = 1.0
-			if ( (self.resource_size['width'], self.resource_size['height']) != (width, height) ):
-				width_magnification = self.resource_size['width'] / width
-				height_magnification = self.resource_size['height'] / height
-				new_width = int(width_magnification * desktop_width)
-				new_height = int(height_magnification * desktop_height)
-				convert_image = cv2.resize( convert_image, dsize=(new_width, new_height) )
-				# 下の座標をもとに戻すための倍率の計算
-				width_magnification = width / self.resource_size['width']
-				height_magnification = height / self.resource_size['height']
+		width_magnification = 1.0
+		height_magnification = 1.0
+		if ( (self.resource_size['width'], self.resource_size['height']) != (width, height) ):
+			width_magnification = self.resource_size['width'] / width
+			height_magnification = self.resource_size['height'] / height
+			new_width = int(width_magnification * desktop_width)
+			new_height = int(height_magnification * desktop_height)
+			convert_image = cv2.resize( convert_image, dsize=(new_width, new_height) )
+			# 下の座標をもとに戻すための倍率の計算
+			width_magnification = width / self.resource_size['width']
+			height_magnification = height / self.resource_size['height']
 
-			# 解像度を見つけてから誤差を調整して探索
-			for key, color_image in enumerate(ready_to_fight_trans_color):
-				_, pos = Utils.match_masked_color_image(convert_image, color_image,
-					ready_to_fight_trans_mask, is_trans=True)
-				capture_area_image = convert_image[ pos[1]:int(pos[1]+self.resource_size['height']), pos[0]:int(pos[0]+self.resource_size['width']) ]
-				is_ready_frame = self._is_ready_frame(capture_area_image)
-				if ( not is_ready_frame ):
-					continue
+		# 解像度を見つけてから誤差を調整して探索
+		x = y = 0
+		for key, color_image in enumerate(self.ready_to_fight_trans_color):
+			_, pos = Utils.match_masked_color_image(convert_image, color_image,
+				self.ready_to_fight_trans_mask, is_trans=True)
+			capture_area_image = convert_image[ pos[1]:int(pos[1]+self.resource_size['height']), pos[0]:int(pos[0]+self.resource_size['width']) ]
+			is_ready_frame, _ = self._is_ready_frame(capture_area_image)
+			if ( not is_ready_frame ):
+				continue
 
-				p_ratio = {}
-				for add_y in [-1, 0, 1]:
-					for add_x in [-1, 0, 1]:
-						x = int((pos[0]) * width_magnification) + add_x
-						y = int((pos[1]) * height_magnification) + add_y
-						if (x < 0 or y < 0 or desktop_height < y+height or desktop_width < x+width):
-							continue
+			# より正確な位置を特定
+			p_ratio = {}
+			for add_y in [-1, 0, 1]:
+				for add_x in [-1, 0, 1, 2]:
+					x = int((pos[0]) * width_magnification) + add_x
+					y = int((pos[1]) * height_magnification) + add_y
+					if (x < 0 or y < 0 or desktop_height < y+height or desktop_width < x+width):
+						continue
 
-						capture_area_image = cv2.resize(self.capture_image[ y:y+height, x:x+width ], dsize=(self.resource_size['width'], self.resource_size['height']))
-						if ( self._is_ready_frame(capture_area_image) ):
-							p_ratio[tuple([add_x, add_y])] = self.ratio
+					capture_area_image = cv2.resize(capture_image[ y:y+height, x:x+width ], dsize=(self.resource_size['width'], self.resource_size['height']))
+					is_ready_frame, ratio = self._is_ready_frame(capture_area_image)
+					if ( is_ready_frame ):
+						p_ratio[tuple([add_x, add_y])] = ratio
 
-				p, ratio = max( p_ratio.items(), key=lambda x:x[1] )
-				x = int(pos[0] * width_magnification) + p[0]
-				y = int(pos[1] * height_magnification) + p[1]
-				self.ratio = ratio
-				self.config['capture']['x'] = x
-				self.config['capture']['y'] = y
-				if (self.config['option']['found_capture_area_fixed']):
-					self.config['option']['find_capture_area'] = False
-					cv2.rectangle(convert_image, (x+1, y+1, width, height), 255, 1)
-					cv2.imwrite('found_capture_area_fixed.png', convert_image)
-				self.logger.info('found capture area {0}x{1}'.format(self.config['capture']['x'], self.config['capture']['y']))
-				break
+			p, result_ratio = max( p_ratio.items(), key=lambda x:x[1] )
+			x = int(pos[0] * width_magnification) + p[0]
+			y = int(pos[1] * height_magnification) + p[1]
+			break
 
-			if ( not is_ready_frame and not in_loop ):
-				Utils.width_full_print('not found capture area.')
-				if ( not self.config['option']['find_capture_area'] ):
-					Utils.width_full_print('change config.option.find_capture_area to true.')
-					self.config['option']['find_capture_area'] = True
-					self.config['option']['found_capture_area_fixed'] = True
-				if (self.config['option']['exit_not_found_capture']):
-					sys.exit(0)
+		return result_ratio, convert_image, x, y
 
-
-	# タイトルからウィンドウを捕捉 (これより, _init_capture_window ぶん回したほうが早いｗｗｗ おまけ程度)
+	# タイトルからウィンドウを捕捉 (これより, _init_capture_area ぶん回したほうが早いｗｗｗ おまけ程度)
 	def _capture_window_title(self, title):
 		handle = ctypes.windll.user32.FindWindowW(None, title)
 		if (0 == handle):
@@ -561,7 +590,7 @@ class SmaBroEngine:
 				player_info = None
 
 		# _store_battle_rate がスタック形式で保存してるので,同期
-		while count != self.count:
+		while count != self.sync:
 			time.sleep(0.0001)
 
 		if (not player_info is None):
@@ -572,13 +601,13 @@ class SmaBroEngine:
 				player_info[-1]['order'] > player_info[0]['order'],
 				player_info[-1]['order'] < player_info[0]['order'] )
 
-		self.count = count+1
+		self.sync = count+1
 	def _load_historys(self):
 		po = Path('./log/')
 		history_pattern = self.config['log']['name'].format(now=r'\d+', chara=r'\S+')
 		dirlist = [file for file in po.glob('*.json') if re.search(history_pattern, str(file))]
 
-		self.count = 0
+		self.sync = 0
 		_ = list(self.executor.map(
 			self._load_history,
 			range(len(dirlist)),
@@ -977,8 +1006,8 @@ class SmaBroEngine:
 			self.ready_to_fight_color,
 			[self.ready_to_fight_mask, self.ready_to_fight_mask]
 			))
-		self.ratio = round(float(max([ _[0] for _ in result ])), 3)
-		return 0.99 <= self.ratio	# READY to FIGHT 画面はカーソルが混じることがあるので低めに設定
+		self.ratio = ratio = round(float(max([ _[0] for _ in result ])), 4)
+		return 0.99 <= ratio, ratio
 
 	# [対戦相手募集中 -> もうすぐ開始]画面の検出
 	def _is_ready_ok_frame(self):
@@ -1218,7 +1247,8 @@ class SmaBroEngine:
 			return
 
 		# [READY to FIGHT!]画面だけは検出する、どの状況でも。なぜなら正常に終わらなくても回ってくるので、回線落ちなどで (英文表記)
-		if (self._is_ready_frame()):
+		is_ready_frame, _ = self._is_ready_frame()
+		if (is_ready_frame):
 			# 前回の試合の結果をうまく検出できていなかった時用の修正用
 			self._battle_end()
 			# (戦闘力の差分)
@@ -1548,17 +1578,13 @@ class SmaBroEngine:
 		self._load_config()
 		self._load_resources()
 		self._default_battle_params()
-		self._load_first_only()
 		self._load_historys()
-		self._init_capture_window()
+		self._init_capture_area()
 		self._default_battle_params()
 
 	# 終了処理
 	def _finalize(self):
 		self.logger.info('finalize')
-		if (self.config['option']['every_time_find_capture_area']):
-			self.config['capture']['width'] = 0
-			self.config['capture']['height'] = 0
 
 		with open(self.config_path, mode='w', encoding='utf-8') as file:
 			file.write( json.dumps([self.config], indent=4, ensure_ascii=False) )
