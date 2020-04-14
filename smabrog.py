@@ -184,6 +184,8 @@ class SmaBroEngine:
 		self.chara = self.config['resource']['character']
 		self.team_color_list = ['red', 'blue', 'yellow', 'green']
 		self.resource_size = { 'width':640, 'height':360 }
+		self.capture_image = None
+		self.count = 0
 		self.battle_rate = defaultdict()
 		self.back_character = ''
 		self.back_power = 0
@@ -199,6 +201,9 @@ class SmaBroEngine:
 		self.battle_streak_ratio = [ {'win':0.0, 'lose':0.0, 'length':0} for _ in self.config['option']['battle_streak_ratio_max'] ]
 
 		# 解析に必要な画像リソース
+		self.loading_mask = cv2.imread(+'resource/loading_mask.png')
+		self.loading_color = cv2.imread(+'resource/loading_color.png')
+
 		self.ready_to_fight_mask = cv2.imread(+'resource/ready_to_fight_mask.png', cv2.IMREAD_UNCHANGED)
 		self.ready_to_fight_color = list(range(2))
 		for i in range(2):
@@ -267,6 +272,8 @@ class SmaBroEngine:
 		self.font = ImageFont.truetype(self.config['resource']['font']['normal'][0], self.config['resource']['font']['normal'][1])
 		self.small_font = ImageFont.truetype(self.config['resource']['font']['small'][0], self.config['resource']['font']['small'][1])
 
+		self.executor = concurrent.futures.ThreadPoolExecutor()
+
 	# 初期化後起動のみ
 	def _load_first_only(self):
 		if ( 0 == self.config['capture']['width'] or 0 == self.config['capture']['height'] ):
@@ -303,8 +310,8 @@ class SmaBroEngine:
 			desktop_width = ctypes.windll.user32.GetSystemMetrics(0)
 			desktop_height = ctypes.windll.user32.GetSystemMetrics(1)
 			capture_erea = (0, 0, desktop_width, desktop_height)
-			capture_image = Utils.pil2cv(ImageGrab.grab(bbox=capture_erea))
-			convert_image = capture_image
+			self.capture_image = Utils.pil2cv(ImageGrab.grab(bbox=capture_erea))
+			convert_image = self.capture_image
 			width = int(self.config['capture']['width'])
 			height = int(self.config['capture']['height'])
 
@@ -337,7 +344,7 @@ class SmaBroEngine:
 						if (x < 0 or y < 0 or desktop_height < y+height or desktop_width < x+width):
 							continue
 
-						capture_area_image = cv2.resize(capture_image[ y:y+height, x:x+width ], dsize=(self.resource_size['width'], self.resource_size['height']))
+						capture_area_image = cv2.resize(self.capture_image[ y:y+height, x:x+width ], dsize=(self.resource_size['width'], self.resource_size['height']))
 						if ( self._is_ready_frame(capture_area_image) ):
 							p_ratio[tuple([add_x, add_y])] = self.ratio
 
@@ -387,9 +394,8 @@ class SmaBroEngine:
 			self._capture_window_title(self.config['capture']['title'])
 		area = self.capture_erea[2] * self.capture_erea[3]
 
-		capture_image = Utils.pil2cv(ImageGrab.grab(bbox=self.capture_erea))
-		capture_image = cv2.resize(capture_image, dsize=(self.resource_size['width'], self.resource_size['height']))
-		return capture_image
+		self.capture_image = Utils.pil2cv(ImageGrab.grab(bbox=self.capture_erea))
+		self.capture_image = cv2.resize(self.capture_image, dsize=(self.resource_size['width'], self.resource_size['height']))
 
 	# 結果画面が正常に捕捉できなかった場合の救済措置
 	def _research_battle_result(self):
@@ -546,26 +552,38 @@ class SmaBroEngine:
 			self.player_order[-1] < self.player_order[0] )
 
 	# 戦歴の読込
-	def _load_history(self):
-		po = Path('./log/')
-		history_pattern = self.config['log']['name'].format(now=r'\d+', chara=r'\S+')
+	def _load_history(self, count, history_path):
+		with open(history_path) as f:
+			try:
+				history_file = json.load(f)
+				player_info = history_file['player']
+			except json.decoder.JSONDecodeError:
+				player_info = None
 
-		dirlist = [file for file in po.glob('*.json') if re.search(history_pattern, str(file))]
-		for history_path in dirlist:
-			Utils.width_full_print(f'\r{history_path}')
-			with open(history_path) as f:
-				try:
-					history_file = json.load(f)
-					player_info = history_file['player']
-				except json.decoder.JSONDecodeError:
-					# 空 or json が正しくないものは無視する
-					continue
+		# _store_battle_rate がスタック形式で保存してるので,同期
+		while count != self.count:
+			time.sleep(0.0001)
 
+		if (not player_info is None):
+			Utils.width_full_print(f'\rloading... {history_path}')
 			self.power = [ player_info[0]['power'], player_info[1]['power'] ]
 			# キャラ別戦歴
 			self._store_battle_rate( [player['name'] for player in player_info[0:] ],
 				player_info[-1]['order'] > player_info[0]['order'],
 				player_info[-1]['order'] < player_info[0]['order'] )
+
+		self.count = count+1
+	def _load_historys(self):
+		po = Path('./log/')
+		history_pattern = self.config['log']['name'].format(now=r'\d+', chara=r'\S+')
+		dirlist = [file for file in po.glob('*.json') if re.search(history_pattern, str(file))]
+
+		self.count = 0
+		_ = list(self.executor.map(
+			self._load_history,
+			range(len(dirlist)),
+			dirlist
+			))
 
 		self.battle_streak_rate = 0
 
@@ -647,7 +665,7 @@ class SmaBroEngine:
 
 	""" capture系 hoge frame を検出した時にする処理 検出時間(昇順) """
 	# [READY to FIGHT]画面
-	def _capture_ready_to_fight_frame(self, capture_image):
+	def _capture_ready_to_fight_frame(self):
 		if (self.frame_state == FrameState.FS_READY_TO_FIGHT):
 			return
 		if (self.power[0] < 0):
@@ -655,9 +673,9 @@ class SmaBroEngine:
 			return
 		self.logger.debug(f'_capture_ready_to_fight{self.ratio}')
 
-		width = int(capture_image.shape[1])
-		height = int(capture_image.shape[0])
-		convert_image = cv2.bitwise_and(capture_image, self.ready_to_fight_name_power_mask)
+		width = int(self.capture_image.shape[1])
+		height = int(self.capture_image.shape[0])
+		convert_image = cv2.bitwise_and(self.capture_image, self.ready_to_fight_name_power_mask)
 		capture_gray_image = cv2.cvtColor(convert_image, cv2.COLOR_RGB2GRAY)
 
 		# 自分の戦闘力の増減値
@@ -887,17 +905,17 @@ class SmaBroEngine:
 		self.logger.debug('change stock=%s', self.result_stock)
 
 	# 結果画面(戦闘力が見える)
-	def _capture_result_frame(self, capture_image, capture_gray_image, player):
+	def _capture_result_frame(self, capture_gray_image, player):
 		if (4 == self.player_count):
 			# 戦闘力の数字の画面はおそらく捕捉しきれないのであきらめるんご！
 			return
 		
 		# 戦闘力の検出
-		width = int(capture_image.shape[1])
-		height = int(capture_image.shape[0])
+		width = int(self.capture_image.shape[1])
+		height = int(self.capture_image.shape[0])
 		power_area_image = list(range(2))
 		gray_power_area_image = list(range(2))
-		convert_image = cv2.bitwise_and(capture_image, self.result_power_mask)
+		convert_image = cv2.bitwise_and(self.capture_image, self.result_power_mask)
 		power_area_image[0] = convert_image[int(height/4):int(height/2), 0:int(width/20*9)]
 		power_area_image[1] = convert_image[int(height/4):int(height/2), int(width/20*11):width]
 		convert_image = cv2.bitwise_and(capture_gray_image, cv2.cvtColor(self.result_power_mask, cv2.COLOR_RGB2GRAY))
@@ -942,37 +960,47 @@ class SmaBroEngine:
 
 
 	""" is系 (watch含む) 検出時間(昇順) """
-	# [READY to FIGHT]画面の検出
-	def _is_ready_frame(self, capture_image):
-		self.ratio = 0.0
-		for color_image in self.ready_to_fight_color:
-			ratio, _ = Utils.match_masked_color_image(capture_image, color_image, self.ready_to_fight_mask)
-			if (self.ratio < ratio):
-				self.ratio = ratio
+	# Loading
+	def _is_loading_frame(self):
+		self.ratio, _ = Utils.match_masked_color_image(self.capture_image, self.loading_color, self.loading_mask)
 		self.ratio = round(float(self.ratio), 3)
+		return 0.99 <= self.ratio
+
+	# [READY to FIGHT]画面の検出
+	def _is_ready_frame(self, capture_image=None):
+		if (capture_image is None):
+			capture_image = self.capture_image
+
+		result = list(self.executor.map(
+			Utils.match_masked_color_image,
+			[capture_image, capture_image],
+			self.ready_to_fight_color,
+			[self.ready_to_fight_mask, self.ready_to_fight_mask]
+			))
+		self.ratio = round(float(max([ _[0] for _ in result ])), 3)
 		return 0.99 <= self.ratio	# READY to FIGHT 画面はカーソルが混じることがあるので低めに設定
 
 	# [対戦相手募集中 -> もうすぐ開始]画面の検出
-	def _is_ready_ok_frame(self, capture_image):
-		self.ratio, _ = Utils.match_masked_color_image(capture_image, self.ready_ok_color, self.ready_ok_mask)
+	def _is_ready_ok_frame(self):
+		self.ratio, _ = Utils.match_masked_color_image(self.capture_image, self.ready_ok_color, self.ready_ok_mask)
 		self.ratio = round(float(self.ratio), 3)
 		return 0.95 <= self.ratio
 
 	# 4人版の[準備OK]画面の検出
-	def _is_with_4_battle_frame(self, capture_image):
-		self.ratio, _ = Utils.match_masked_color_image(capture_image, self.with_4_battle_color, self.with_4_battle_mask)
+	def _is_with_4_battle_frame(self):
+		self.ratio, _ = Utils.match_masked_color_image(self.capture_image, self.with_4_battle_color, self.with_4_battle_mask)
 		self.ratio = round(float(self.ratio), 3)
 		return 0.95 <= self.ratio
 
 	# [spam vs ham]画面かどうか
-	def _is_vs_frame(self, capture_image):
-		self.ratio, _ = Utils.match_masked_color_image(capture_image, self.vs_color, self.vs_mask)
+	def _is_vs_frame(self):
+		self.ratio, _ = Utils.match_masked_color_image(self.capture_image, self.vs_color, self.vs_mask)
 		self.ratio = round(float(self.ratio), 3)
 		return 0.97 <= self.ratio
 
 	# [紅蒼乱闘戦]画面かどうかをついでに返す
-	def _watch_smash_or_team_frame(self, capture_image):
-		convert_image = capture_image
+	def _watch_smash_or_team_frame(self):
+		convert_image = self.capture_image
 		convert_image = cv2.bitwise_and(convert_image, self.rule_smash_or_team_mask)
 		if ('smash' == self.group_name):
 			self.ratio, _ = Utils.match_masked_color_image(convert_image, self.rule_smash_color)
@@ -1011,20 +1039,20 @@ class SmaBroEngine:
 		return False
 
 	# [GO!]画面かどうか
-	def _is_go_frame(self, capture_image):
-		self.ratio, _ = Utils.match_masked_color_image(capture_image, self.battle_time_zero_color, self.battle_time_zero_mask, is_trans=True)
+	def _is_go_frame(self):
+		self.ratio, _ = Utils.match_masked_color_image(self.capture_image, self.battle_time_zero_color, self.battle_time_zero_mask, is_trans=True)
 		self.ratio = round(float(self.ratio), 3)
 		return 0.98 <= self.ratio
 
 	# [時計マーク] {N}:00 [人マーク] {P} 画面
-	def _is_time_stock_frame(self, capture_image):
-		self.ratio, _ = Utils.match_masked_color_image(capture_image, self.rule_time_stock_color, self.rule_time_stock_mask, is_trans=True)
+	def _is_time_stock_frame(self):
+		self.ratio, _ = Utils.match_masked_color_image(self.capture_image, self.rule_time_stock_color, self.rule_time_stock_mask, is_trans=True)
 		self.ratio = round(float(self.ratio), 3)
 		return 0.99 <= self.ratio
 
 	# プレイヤー毎の [0.0%] を監視
-	def _watch_player_zero_damage(self, capture_image):
-		convert_image = capture_image
+	def _watch_player_zero_damage(self):
+		convert_image = self.capture_image
 		player_pos = [0, 0]
 		add_pos = [0, 0]
 		size = [34, 25]
@@ -1047,8 +1075,8 @@ class SmaBroEngine:
 				self.player_damage[player] = 1.0
 
 	# ストックが変動した[-1/+1]を探して反映させる
-	def _watch_stock_changed_frame(self, capture_image):
-		convert_image = capture_image
+	def _watch_stock_changed_frame(self):
+		convert_image = self.capture_image
 		player_pos = list(range(self.player_count))
 		ones_size = [19, 14]
 		size = [25, 14]
@@ -1099,21 +1127,30 @@ class SmaBroEngine:
 				self.result_stock['max'][plus_player] += 1
 
 	# ストックが表示されてる画面か
-	def _is_stock_number_frame(self, capture_image):
-		black_ratio, _ = Utils.match_masked_color_image(capture_image, self.stock_hyphen_color_black, self.stock_hyphen_mask)
-		white_ratio, _ = Utils.match_masked_color_image(capture_image, self.stock_hyphen_color_white, self.stock_hyphen_mask)
-		self.ratio = round(float(max(black_ratio, white_ratio)), 3)
+	def _is_stock_number_frame(self):
+		result = list(self.executor.map(
+			Utils.match_masked_color_image,
+			[self.capture_image, self.capture_image],
+			[self.stock_hyphen_color_black, self.stock_hyphen_color_white],
+			[self.stock_hyphen_mask, self.stock_hyphen_mask]
+			))
+		self.ratio = round(float(max([ _[0] for _ in result ])), 3)
 		return 0.98 <= self.ratio
 
 	# [GAME SET][TIME UP]画面かどうか
-	def _is_game_end_frame(self, capture_image):
-		game_set_ratio, _ = Utils.match_masked_color_image(capture_image, self.game_set_color, self.game_set_mask, is_trans=True)
-		time_up_ratio, _ = Utils.match_masked_color_image(capture_image, self.time_up_color, self.time_up_mask, is_trans=True)
-		self.ratio = round(float(max(game_set_ratio, time_up_ratio)), 3)
+	def _is_game_end_frame(self):
+		result = list(self.executor.map(
+			Utils.match_masked_color_image,
+			[self.capture_image, self.capture_image],
+			[self.game_set_color, self.time_up_color],
+			[self.game_set_mask, self.time_up_mask],
+			[True, True]
+			))
+		self.ratio = round(float(max([ _[0] for _ in result ])), 3)
 		return 0.98 <= self.ratio
 
 	# 結果画面(戦闘力が見える)かどうかをついでに返す
-	def _watch_reuslt_frame(self, capture_image, capture_gray_image):
+	def _watch_reuslt_frame(self, capture_gray_image):
 		# この画面の検出率がすこぶる悪い
 
 		if (2 == self.player_count):
@@ -1125,7 +1162,7 @@ class SmaBroEngine:
 			player = self.player_count - reverse_player - 1
 
 			# 順位の検出
-			convert_image =  capture_image[pos[1]:(100+pos[1]), pos[0]:(100+pos[0])]
+			convert_image =  self.capture_image[pos[1]:(100+pos[1]), pos[0]:(100+pos[0])]
 			order_color_len = len(self.result_player_order_color)
 			order_ratio = [-1] * order_color_len
 			pos = [0,0] * order_color_len
@@ -1140,7 +1177,7 @@ class SmaBroEngine:
 			order = order % 4	# 順位のテンプレートに大きさが異なるものがあるため
 
 			# 戦闘力だけは順位が決まっても取得し続ける
-			self._capture_result_frame(capture_image, capture_gray_image, player)
+			self._capture_result_frame(capture_gray_image, player)
 
 			if (self.player_order_ratio[player] <= self.ratio and
 				self.player_order[player] != int( 1 + order ) and
@@ -1160,33 +1197,32 @@ class SmaBroEngine:
 		return False
 
 	# 「同じ相手との再戦を希望しますか？」画面か
-	def _is_battle_retry_frame(self, capture_image):
+	def _is_battle_retry_frame(self):
 		if ( all([(-1 == order) for order in self.player_order]) ):
 			# 順位が全く取れていない場合は何もしない(※これはイメージです の画像くらい違うものを検出してる可能性があるため)
 			return False
 
-		self.ratio, _ = Utils.match_masked_color_image(capture_image, self.battle_retry_color, self.battle_retry_mask)
+		self.ratio, _ = Utils.match_masked_color_image(self.capture_image, self.battle_retry_color, self.battle_retry_mask)
 		self.ratio = round(float(self.ratio), 3)
 		return 0.98 <= self.ratio
 
 	# frame がどこかを特定して応じて処理をする
-	def _capture_any_frame(self, capture_image):
+	def _capture_any_frame(self):
 
-		gray_image = cv2.cvtColor(capture_image, cv2.COLOR_RGB2GRAY)
+		gray_image = cv2.cvtColor(self.capture_image, cv2.COLOR_RGB2GRAY)
 
-		#cv2.imshow('capture', capture_image)	# debug only
+		#cv2.imshow('capture', self.capture_image)	# debug only
 
-		zero = cv2.countNonZero(gray_image)
-		if (zero/(self.capture_erea[2]*self.capture_erea[3]) < 0.05):
+		if (self._is_loading_frame()):
 			# まっ黒に近い画面は処理しない
 			return
 
 		# [READY to FIGHT!]画面だけは検出する、どの状況でも。なぜなら正常に終わらなくても回ってくるので、回線落ちなどで (英文表記)
-		if (self._is_ready_frame(capture_image)):
+		if (self._is_ready_frame()):
 			# 前回の試合の結果をうまく検出できていなかった時用の修正用
 			self._battle_end()
 			# (戦闘力の差分)
-			self._capture_ready_to_fight_frame(capture_image)
+			self._capture_ready_to_fight_frame()
 			self.frame_state = FrameState.FS_READY_TO_FIGHT
 			return
 		elif (self.frame_state in {FrameState.FS_UNKNOWN}):
@@ -1194,13 +1230,13 @@ class SmaBroEngine:
 
 		if (self.frame_state in {FrameState.FS_READY_TO_FIGHT, FrameState.FS_RESULT, FrameState.FS_RETRY}):
 			# [まもなく開始]画面 (プレイヤー名)
-			if (self._is_ready_ok_frame(capture_image)):
+			if (self._is_ready_ok_frame()):
 				self._battle_end()
 				self._default_battle_params()
 				self.frame_state = FrameState.FS_READY_OK
 				self._capture_ready_ok_frame(gray_image)
 
-			if (self._is_battle_retry_frame(capture_image)):
+			if (self._is_battle_retry_frame()):
 				if (self.frame_state == FrameState.FS_RESULT):
 					self.frame_state = FrameState.FS_RETRY
 
@@ -1209,7 +1245,7 @@ class SmaBroEngine:
 		if (self.frame_state == FrameState.FS_READY_OK):
 			if (2 == self.player_count):
 				# battle with 4 (人数を 2 から 4 へ変更,もはやプレイヤー名とか正確に取れないので無視する)
-				if (self._is_with_4_battle_frame(capture_image)):
+				if (self._is_with_4_battle_frame()):
 					self.logger.debug(f'_is_with_4_battle_frame{self.ratio}')
 					entry_name = self.entry_name
 					self._default_battle_params(player_count=4)
@@ -1219,57 +1255,57 @@ class SmaBroEngine:
 
 				# [{foo} vs {bar}]画面 (1on1,キャラクター名)
 				# TODO:開始時間をここでついでにとりたい
-				if (self._is_vs_frame(capture_image)):
+				if (self._is_vs_frame()):
 					self.frame_state = FrameState.FS_WHAT_CHARACTER
 					self._capture_character_name(gray_image)
 					with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executer:
-						_ = list(executer.map(cv2.imwrite, ['last_vs_character.png'], [capture_image]))
+						_ = list(executer.map(cv2.imwrite, ['last_vs_character.png'], [self.capture_image]))
 
 			elif (4 == self.player_count):
 				# 大乱闘 or チーム乱闘 (smash or team,キャラクター名)
-				is_smash_or_team_frame = self._watch_smash_or_team_frame(capture_image)
+				is_smash_or_team_frame = self._watch_smash_or_team_frame()
 				if (is_smash_or_team_frame):
 					self.frame_state = FrameState.FS_WHAT_CHARACTER
 					self._capture_character_name(gray_image)
 					with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executer:
-						_ = list(executer.map(cv2.imwrite, ['last_vs_character.png'], [capture_image]))
+						_ = list(executer.map(cv2.imwrite, ['last_vs_character.png'], [self.capture_image]))
 			return
 
 		if (self.frame_state == FrameState.FS_WHAT_CHARACTER):
 			# [.00]画面 (開始時間)
-			if (self._is_go_frame(capture_image)):
+			if (self._is_go_frame()):
 				self.logger.debug(f'_is_go_frame{self.ratio}')
 				self.frame_state = FrameState.FS_BATTLE
 
 			# [時計マーク] {N}:00 [人マーク] {P} 画面
-			if (self._is_time_stock_frame(capture_image)):
+			if (self._is_time_stock_frame()):
 				self._capture_time_stock_frame(gray_image)
 
 			return
 
 		if (self.frame_state == FrameState.FS_BATTLE):
 			# [GAME SET][TIME UP]画面
-			if (self._is_game_end_frame(capture_image)):
+			if (self._is_game_end_frame()):
 				self.logger.debug(f'_is_game_end_frame{self.ratio}')
 				self.frame_state = FrameState.FS_BATTLE_END
 				return
 
 			# [0.0]% 監視 それ以外だと [1.0]% が代入される
-			self._watch_player_zero_damage(capture_image)
+			self._watch_player_zero_damage()
 
 			# [N - N]画面 (ストック数) (この画面は [1on1]でルール[stock] の時しか表示されない)
-			if (self._is_stock_number_frame(capture_image)):
+			if (self._is_stock_number_frame()):
 				self._capture_stock_number_frame(gray_image)
 
 			# ストックの[-1 or +1]を監視,観測するとダメージに [-1.0]% が代入される (この画面はルール[time]の時しか表示されない)
-			self._watch_stock_changed_frame(capture_image)
+			self._watch_stock_changed_frame()
 
 			return
 
 		if (self.frame_state == FrameState.FS_BATTLE_END):
 			# [結果]画面 (戦闘力,勝敗)
-			is_result_frame = self._watch_reuslt_frame(capture_image, gray_image)
-			if (self._is_battle_retry_frame(capture_image)):
+			is_result_frame = self._watch_reuslt_frame(gray_image)
+			if (self._is_battle_retry_frame()):
 				# 爆速ニキがどうしても捕捉できないので片方の戦歴から予測して調整する
 				self.logger.debug(f'_is_battle_retry_frame{self.ratio}')
 				is_result_frame = True
@@ -1278,13 +1314,13 @@ class SmaBroEngine:
 				self._battle_end()
 				self.frame_state = FrameState.FS_RESULT
 				with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executer:
-					_ = list(executer.map(cv2.imwrite, ['last_foo_vs_bar_power.png'], [capture_image]))
+					_ = list(executer.map(cv2.imwrite, ['last_foo_vs_bar_power.png'], [self.capture_image]))
 
 			return
 
 
 	# 文字 が主な情報
-	def _user_interface_text(self, capture_image):
+	def _user_interface_text(self):
 		# 表示する情報
 		chara_name = list(self.chara_name)
 		base_char = 65
@@ -1336,12 +1372,12 @@ class SmaBroEngine:
 		return self.gui_info
 
 	# FS_WHAT_CHARACTER 中のアニメーション
-	def _animation_what_character(self, capture_image):
+	def _animation_what_character(self):
 		win = self.battle_rate[tuple(self.chara_name)]['win']
 		lose = self.battle_rate[tuple(self.chara_name)]['lose']
 		if (0 <= self.animation_count):
 			# グラフの作成,および試合数 0 からの遷移
-			self._make_interface_canvas(capture_image)
+			self._make_interface_canvas()
 
 			self.gui_info['ax'].pie(
 				numpy.array([lose, win]),
@@ -1400,9 +1436,9 @@ class SmaBroEngine:
 		self.gui_info['image'] = Utils.pil2cv(self.gui_info['image'])
 
 	# FS_RETRY 後のアニメーション
-	def _animation_retry(self, capture_image):
+	def _animation_retry(self):
 		if (50 == self.animation_count):
-			self.animation_image = numpy.zeros(capture_image.shape, dtype=numpy.uint8)
+			self.animation_image = numpy.zeros(self.capture_image.shape, dtype=numpy.uint8)
 
 		battle_streak_ratio_max = self.config['option']['battle_streak_ratio_max']
 		change_count = 40 / len(battle_streak_ratio_max)
@@ -1414,7 +1450,7 @@ class SmaBroEngine:
 			num = numpy.array(power_history)[:,0]	# 試合番号
 			power = numpy.array(power_history)[:,1]	# 戦闘力
 
-			self._make_interface_canvas(capture_image)
+			self._make_interface_canvas()
 			self.gui_info['ax'].plot(num, power, marker='.', color='pink', label='世界戦闘力の推移')
 
 			self.gui_info['ax'].set_xlabel(f'試合数')
@@ -1439,7 +1475,7 @@ class SmaBroEngine:
 			self.animation_image, 1, 0)
 
 	# アニメーション が主な情報
-	def _user_interface_animation(self, capture_image):
+	def _user_interface_animation(self):
 		if (not self.config['option']['battle_information_animation']):
 			return
 		if (2 != self.player_count):
@@ -1451,18 +1487,18 @@ class SmaBroEngine:
 
 		# [VS]画面中に キャラ別勝率を表示する
 		if (FrameState.FS_WHAT_CHARACTER == self.frame_state and -10 < self.animation_count):
-			self._animation_what_character(capture_image)
+			self._animation_what_character()
 
 		if (FrameState.FS_BATTLE_END == self.frame_state and 50 != self.animation_count):
 			self.animation_count = 50 # _animation_what_character に必要な初期化
 
 		if (FrameState.FS_RETRY == self.frame_state and 2 < len(self.power_history[self.chara_name[0]]) and 0 < self.animation_count):
-			self._animation_retry(capture_image)
+			self._animation_retry()
 
 	# guiやanimationのための基盤の作成
-	def _make_interface_canvas(self, capture_image):
+	def _make_interface_canvas(self):
 		if (self.gui_info is None):
-			gui_image = numpy.zeros(capture_image.shape, dtype=numpy.uint8)
+			gui_image = numpy.zeros(self.capture_image.shape, dtype=numpy.uint8)
 			gui_image[:] = tuple(self.config['option']['battle_information']['back'])
 			gui_image = numpy.array(gui_image)
 			gui_image = Utils.pil2cv(gui_image)
@@ -1481,38 +1517,30 @@ class SmaBroEngine:
 
 		self.gui_info = { 'image':gui_image, 'fig':fig, 'ax':ax }
 
+
+	# 1 frame 中の処理
+	def _main_frame(self):
+		# 1 frame capture
+		self._capture_window()
+
+		self._capture_any_frame()
+
 	# バトル中に表示する情報
-	def _user_interface(self, capture_image):
+	def _main_ui_frame(self):
 		if (self.config['option']['battle_informationGUI'] or self.config['option']['battle_information_animation']):
 			if (self.gui_info is None):
-				self._make_interface_canvas(capture_image)
+				self._make_interface_canvas()
 			else:
 				self.gui_info['image'][:] = tuple(self.config['option']['battle_information']['back'])
 
-		self._user_interface_animation(capture_image)
-		self._user_interface_text(capture_image)
+		self._user_interface_animation()
+
+		self._user_interface_text()
 
 		if (self.config['option']['battle_informationGUI']):
 			plt.close()
 			cv2.imshow(self.config['option']['battle_information']['caption'], self.gui_info['image'])
 
-
-	# 1 frame 中の処理
-	def _main_frame(self):
-		# 1 frame capture
-		capture_image = self._capture_window()
-
-		self._capture_any_frame(capture_image)
-
-		self._user_interface(capture_image)
-
-		cv2.waitKey(1)
-
-		# GUIを表示しているときだけ WM_CLOSE で終了する
-		if ( self.config['option']['battle_informationGUI'] ):
-			if ( cv2.getWindowProperty( self.config['option']['battle_information']['caption'], cv2.WND_PROP_VISIBLE ) < 1 ):
-				return False
-		return True
 
 	# 初期化処理
 	def _initialize(self):
@@ -1521,7 +1549,7 @@ class SmaBroEngine:
 		self._load_resources()
 		self._default_battle_params()
 		self._load_first_only()
-		self._load_history()
+		self._load_historys()
 		self._init_capture_window()
 		self._default_battle_params()
 
@@ -1537,12 +1565,19 @@ class SmaBroEngine:
 
 		Utils.width_full_print('exit.', logger_func=self.logger.info)
 
-
 	# main loop
 	def _main_loop(self):
 		Utils.width_full_print('ready.', logger_func=self.logger.info)
-		while( self._main_frame() ):
-			pass
+		while( True ):
+			self._main_frame()
+			self._main_ui_frame()
+
+			cv2.waitKey(1)
+
+			# GUIを表示しているときだけ WM_CLOSE で終了する
+			if ( self.config['option']['battle_informationGUI'] ):
+				if ( cv2.getWindowProperty( self.config['option']['battle_information']['caption'], cv2.WND_PROP_VISIBLE ) < 1 ):
+					break
 
 	# exeception dump
 	def _dump(self, err):
@@ -1555,6 +1590,7 @@ class SmaBroEngine:
 	def run(self):
 		try:
 			self._initialize()
+
 			self._main_loop()
 		except KeyboardInterrupt:
 			pass

@@ -3,10 +3,10 @@
         "capture": {
             "title": "",
             "title_back": "MonsterX U3.0R",
-            "width": 0,
-            "height": 0,
-            "x": 219,
-            "y": 79
+            "width": 640,
+            "height": 360,
+            "x": 30,
+            "y": 706
         },
         "log": {
             "headers": {
@@ -34,12 +34,12 @@
                     175,
                     100
                 ],
-                "cui_text": "\r{frame}({ratio}) <{group_name}> {player_info}",
+                "cui_text": "\r<{group_name}> {player_info}",
                 "gui": {
                     "height": 360,
                     "width": 640
                 },
-                "gui_text": " {streak} {streak_name}\n{streak_ratio[0][length]}戦中 勝:{streak_ratio[0][win]}% 負:{streak_ratio[0][lose]}%",
+                "gui_text": " {streak} {streak_name}\n{streak_ratio[0][length]}戦中 勝:{streak_ratio[0][win]}% 負:{streak_ratio[0][lose]}%                    ({ratio}){frame}",
                 "pos": [
                     0,
                     320
@@ -47,7 +47,7 @@
                 "streak_wins": "連勝",
                 "streak_loses": "連敗"
             },
-            "battle_informationCUI": true,
+            "battle_informationCUI": false,
             "battle_informationGUI": true,
             "battle_information_animation": true,
             "battle_streak_ratio_max": [
@@ -57,7 +57,7 @@
             "exit_not_found_capture": false,
             "find_capture_area": true,
             "found_capture_area_fixed": false,
-            "every_time_find_capture_area": true
+            "every_time_find_capture_area": false
         },
         "resource": {
             "font": {
