@@ -278,6 +278,7 @@ class SmaBroEngine:
 		self.small_font = ImageFont.truetype(self.config['resource']['font']['small'][0], self.config['resource']['font']['small'][1])
 
 		self.executor = concurrent.futures.ThreadPoolExecutor(self.config['option']['max_workers'])
+		self.process_executor = concurrent.futures.ProcessPoolExecutor(self.config['option']['max_workers'])
 
 	# キャプチャに関する初期化
 	def _init_capture_area(self):
@@ -437,7 +438,7 @@ class SmaBroEngine:
 			power = numpy.array(power_history)[:,1].tolist()
 			for i in range(self.player_count):
 				if ( 1e6 < abs(numpy.mean(power) - self.power[i]) ):
-					self.logger.debug(f'player power is impossible value {self.power[i]} -> 0')
+					self.logger.debug(f'player {i} power is impossible value {self.power[i]} -> 0')
 					self.power[i] = 0
 
 
@@ -1180,8 +1181,6 @@ class SmaBroEngine:
 
 	# 結果画面(戦闘力が見える)かどうかをついでに返す
 	def _watch_reuslt_frame(self, capture_gray_image):
-		# この画面の検出率がすこぶる悪い
-
 		if (2 == self.player_count):
 			order_pos = [ [200, 0], [470, 0] ]
 		elif (4 == self.player_count):
@@ -1195,13 +1194,17 @@ class SmaBroEngine:
 			order_color_len = len(self.result_player_order_color)
 			order_ratio = [-1] * order_color_len
 			pos = [0,0] * order_color_len
-			for order in range(order_color_len):
-				ratio, p = Utils.match_masked_color_image(convert_image, self.result_player_order_color[order],
-					self.result_player_order_mask[order], is_trans=True)
-				order_ratio[order] = round(float(ratio), 3)
-				pos[order] = p
 
-			order = int(numpy.argmax(order_ratio))
+			result = list(self.process_executor.map(
+				Utils.match_masked_color_image,
+				[convert_image] * order_color_len,
+				self.result_player_order_color,
+				self.result_player_order_mask,
+				[True] * order_color_len
+				))
+			order_ratio = [ round(float(ratio[0]), 3) for ratio in result ]
+			order = numpy.argmax(order_ratio)
+
 			self.ratio = order_ratio[order]
 			order = order % 4	# 順位のテンプレートに大きさが異なるものがあるため
 
@@ -1213,7 +1216,6 @@ class SmaBroEngine:
 				order in range(0, self.player_count) ):
 				# 同時に結果が捕捉できるタイミングが違うのでプレイヤーごとに処理 (かつ片方が取れるかもしれない状況ということはもう片方が取れる確率も高いので power 判定はもう片方のも行う)
 				# しかもより確率が高い order が検出された場合,更新する
-				#Utils.draw_text_line(convert_image, f'{ratio}\n{int(1 + order )}', thickness=1,color=(255,255,127), font_scale=0.4)		# debug only
 				#cv2.imshow('_watch_reuslt_frame_masked{0}'.format(player), convert_image)	# debug only
 
 				self.player_order_ratio[player] = self.ratio
@@ -1288,8 +1290,7 @@ class SmaBroEngine:
 				if (self._is_vs_frame()):
 					self.frame_state = FrameState.FS_WHAT_CHARACTER
 					self._capture_character_name(gray_image)
-					with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executer:
-						_ = list(executer.map(cv2.imwrite, ['last_vs_character.png'], [self.capture_image]))
+					_ = list(self.process_executor.map(cv2.imwrite, ['last_vs_character.png'], [self.capture_image]))
 
 			elif (4 == self.player_count):
 				# 大乱闘 or チーム乱闘 (smash or team,キャラクター名)
@@ -1297,8 +1298,7 @@ class SmaBroEngine:
 				if (is_smash_or_team_frame):
 					self.frame_state = FrameState.FS_WHAT_CHARACTER
 					self._capture_character_name(gray_image)
-					with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executer:
-						_ = list(executer.map(cv2.imwrite, ['last_vs_character.png'], [self.capture_image]))
+					_ = list(self.process_executor.map(cv2.imwrite, ['last_vs_character.png'], [self.capture_image]))
 			return
 
 		if (self.frame_state == FrameState.FS_WHAT_CHARACTER):
@@ -1343,8 +1343,7 @@ class SmaBroEngine:
 			if (is_result_frame):
 				self._battle_end()
 				self.frame_state = FrameState.FS_RESULT
-				with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executer:
-					_ = list(executer.map(cv2.imwrite, ['last_foo_vs_bar_power.png'], [self.capture_image]))
+				_ = list(self.process_executor.map(cv2.imwrite, ['last_foo_vs_bar_power.png'], [self.capture_image]))
 
 			return
 
@@ -1405,39 +1404,10 @@ class SmaBroEngine:
 	def _animation_what_character(self):
 		win = self.battle_rate[tuple(self.chara_name)]['win']
 		lose = self.battle_rate[tuple(self.chara_name)]['lose']
-		if (0 <= self.animation_count):
+		if (4 == self.animation_count):
 			# グラフの作成,および試合数 0 からの遷移
 			self._make_interface_canvas()
-
-			self.gui_info['ax'].pie(
-				numpy.array([lose, win]),
-				labels=['']*2,
-				counterclock=False, startangle=90, radius=0.2, labeldistance=1.0,
-				wedgeprops={'linewidth': 2, 'edgecolor':"black"},
-				colors=['lightblue', 'pink'], textprops={'color':'white'})
-
-			self.gui_info['fig'].canvas.draw()
-
-			image = numpy.array(self.gui_info['fig'].canvas.renderer.buffer_rgba())
-			image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
-			# グラフの部分だけ取り出して,
-			h, w = image.shape[0:2]
-			image = image[ int(h/3+2):int(h/3*2+2), int(w/5*2+8):int(w/5*3+8) ]	# matplotlibのグラフなんで中央に描画してくれないん？？？
-			h, w = image.shape[0:2]
-			si_h, si_w = self.smabro_icon.shape[0:2]
-			x = int((w-si_w)/2)
-			y = int((h-si_h)/2)
-			# iconの透過色付きの貼り付け
-			mask = self.smabro_icon[:,:,3]
-			mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-			mask = mask / 255.0
-			smabro_icon = self.smabro_icon[:,:,:3]
-			image[ y:y+si_h, x:x+si_w ] = image[ y:y+si_h, x:x+si_w ] * 1 - mask
-			smabro_icon = cv2.bitwise_not(cv2.cvtColor( Utils.pil2cv(smabro_icon * mask), cv2.COLOR_BGR2RGB ))
-			smabro_area = cv2.cvtColor( Utils.pil2cv(image[ y:y+si_h, x:x+si_w ]), cv2.COLOR_BGR2RGB )
-			image[ y:y+si_h, x:x+si_w ] = cv2.bitwise_and(smabro_icon, smabro_area)
-
-			self.animation_image = image
+			self._make_character_rate_graph(win, lose)
 
 		self.animation_count -= 1 if -10 < self.animation_count else 0
 		# 本体と合成
@@ -1448,8 +1418,8 @@ class SmaBroEngine:
 
 		# 消滅アニメ
 		alpha = 1.0 / max(10-abs(self.animation_count), 1)
-		black = Utils.pil2cv( numpy.zeros((h,w,3)) )
-		self.animation_image = cv2.addWeighted(black, (1-alpha), self.animation_image, (1-alpha), 0)
+		black_image = Utils.pil2cv( numpy.zeros((h, w, 3)) )
+		self.animation_image = cv2.addWeighted(black_image, (1-alpha), self.animation_image, (1-alpha), 0)
 		# %表示
 		self.gui_info['image'] = Image.fromarray(self.gui_info['image'])
 		draw = ImageDraw.Draw(self.gui_info['image'])
@@ -1499,7 +1469,7 @@ class SmaBroEngine:
 			image = numpy.array(self.gui_info['fig'].canvas.renderer.buffer_rgba())
 			self.animation_image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
 
-		self.animation_count -= 1 if 0 < self.animation_count else 0
+		self.animation_count -= 1 if 1 < self.animation_count else 0
 
 		self.gui_info['image'] = cv2.addWeighted(self.gui_info['image'], 1,
 			self.animation_image, 1, 0)
@@ -1522,7 +1492,7 @@ class SmaBroEngine:
 		if (FrameState.FS_BATTLE_END == self.frame_state and 50 != self.animation_count):
 			self.animation_count = 50 # _animation_what_character に必要な初期化
 
-		if (FrameState.FS_RETRY == self.frame_state and 2 < len(self.power_history[self.chara_name[0]]) and 0 < self.animation_count):
+		if (FrameState.FS_RETRY == self.frame_state and 2 < len(self.power_history[self.chara_name[0]])):
 			self._animation_retry()
 
 	# guiやanimationのための基盤の作成
@@ -1546,6 +1516,36 @@ class SmaBroEngine:
 		ax.patch.set_facecolor( tuple(self.config['option']['battle_information']['back']) )
 
 		self.gui_info = { 'image':gui_image, 'fig':fig, 'ax':ax }
+
+	# キャラクター戦歴の円グラフの作成
+	def _make_character_rate_graph(self, win, lose):
+		self.gui_info['ax'].pie(
+			numpy.array([lose, win]),
+			labels=['']*2,
+			counterclock=False, startangle=90, radius=0.2, labeldistance=1.0,
+			wedgeprops={'linewidth': 2, 'edgecolor':"black"},
+			colors=['lightblue', 'pink'], textprops={'color':'white'})
+		self.gui_info['fig'].canvas.draw()
+		image = numpy.array(self.gui_info['fig'].canvas.renderer.buffer_rgba())
+		image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
+		# グラフの部分だけ取り出して,
+		h, w = image.shape[0:2]
+		image = image[ int(h/3+2):int(h/3*2+2), int(w/5*2+8):int(w/5*3+8) ]	# matplotlibのグラフなんで中央に描画してくれないん？？？
+		h, w = image.shape[0:2]
+		si_h, si_w = self.smabro_icon.shape[0:2]
+		x = int((w-si_w)/2)
+		y = int((h-si_h)/2)
+		# iconの透過色付きの貼り付け
+		mask = self.smabro_icon[:,:,3]
+		mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+		mask = mask / 255.0
+		smabro_icon = self.smabro_icon[:,:,:3]
+		image[ y:y+si_h, x:x+si_w ] = image[ y:y+si_h, x:x+si_w ] * 1 - mask
+		smabro_icon = cv2.bitwise_not(cv2.cvtColor( Utils.pil2cv(smabro_icon * mask), cv2.COLOR_BGR2RGB ))
+		smabro_area = cv2.cvtColor( Utils.pil2cv(image[ y:y+si_h, x:x+si_w ]), cv2.COLOR_BGR2RGB )
+		image[ y:y+si_h, x:x+si_w ] = cv2.bitwise_and(smabro_icon, smabro_area)
+
+		self.animation_image = image
 
 
 	# 1 frame 中の処理
