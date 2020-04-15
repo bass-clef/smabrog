@@ -151,7 +151,7 @@ class FrameState(IntEnum):
 	FS_BATTLE = 4
 	FS_BATTLE_END = 5
 	FS_RESULT = 6
-	FS_RETRY = 7
+	FS_SAVED = 7
 	FS_LOADING = 8
 
 class SmaBroEngine:
@@ -1260,7 +1260,7 @@ class SmaBroEngine:
 		elif (self.frame_state in {FrameState.FS_UNKNOWN}):
 			return
 
-		if (self.frame_state in {FrameState.FS_READY_TO_FIGHT, FrameState.FS_RESULT, FrameState.FS_RETRY}):
+		if (self.frame_state in {FrameState.FS_READY_TO_FIGHT, FrameState.FS_RESULT, FrameState.FS_SAVED}):
 			# [まもなく開始]画面 (プレイヤー名)
 			if (self._is_ready_ok_frame()):
 				self._battle_end()
@@ -1270,7 +1270,7 @@ class SmaBroEngine:
 
 			if (self._is_battle_retry_frame()):
 				if (self.frame_state == FrameState.FS_RESULT):
-					self.frame_state = FrameState.FS_RETRY
+					self.frame_state = FrameState.FS_SAVED
 
 			return
 
@@ -1435,13 +1435,13 @@ class SmaBroEngine:
 		self.gui_info['image'] = numpy.array(self.gui_info['image'])
 		self.gui_info['image'] = Utils.pil2cv(self.gui_info['image'])
 
-	# FS_RETRY 後のアニメーション
+	# FS_SAVED 後のアニメーション
 	def _animation_retry(self):
 		if (50 == self.animation_count):
 			self.animation_image = numpy.zeros(self.capture_image.shape, dtype=numpy.uint8)
 
 		battle_streak_ratio_max = self.config['option']['battle_streak_ratio_max']
-		change_count = 40 / len(battle_streak_ratio_max)
+		change_count = int(50 / len(battle_streak_ratio_max))
 		if (0 == self.animation_count % change_count):
 			streak_max = battle_streak_ratio_max[int(40 / self.animation_count - 1)]
 			power_history = self.power_history[self.chara_name[0]][::-1]
@@ -1455,7 +1455,7 @@ class SmaBroEngine:
 
 			self.gui_info['ax'].set_xlabel(f'試合数')
 			self.gui_info['ax'].set_ylabel('世界戦闘力')
-			self.gui_info['ax'].set_title(f'{self.chara_name[0]}の勝率 直近({streak_max}戦)', color='white')
+			self.gui_info['ax'].set_title(f'{self.chara_name[0]}の勝率 直近({len(power_history)}戦)', color='white')
 			self.gui_info['ax'].xaxis.label.set_color('gray')
 			self.gui_info['ax'].yaxis.label.set_color('gray')
 			self.gui_info['ax'].tick_params(axis='x', colors='gray')
@@ -1492,7 +1492,9 @@ class SmaBroEngine:
 		if (FrameState.FS_BATTLE_END == self.frame_state and 50 != self.animation_count):
 			self.animation_count = 50 # _animation_what_character に必要な初期化
 
-		if (FrameState.FS_RETRY == self.frame_state and 2 < len(self.power_history[self.chara_name[0]])):
+		if (self.frame_state in {FrameState.FS_RESULT, FrameState.FS_SAVED} and
+			2 < len(self.power_history[self.chara_name[0]]) and
+			self._is_loading_frame()):
 			self._animation_retry()
 
 	# guiやanimationのための基盤の作成
@@ -1546,7 +1548,6 @@ class SmaBroEngine:
 		image[ y:y+si_h, x:x+si_w ] = cv2.bitwise_and(smabro_icon, smabro_area)
 
 		self.animation_image = image
-
 
 	# 1 frame 中の処理
 	def _main_frame(self):
