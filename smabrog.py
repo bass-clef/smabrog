@@ -199,7 +199,7 @@ class SmaBroEngine:
 		self.power_history = {}
 		self.power_limit = { 'min':-1, 'max':-1 }
 		self.time_zero = datetime.datetime(1900, 1, 1, 0, 0)
-		self.animation_count = 0
+		self.animation_count = 50
 		self.animation_calc = 0
 		self.animation_image = None
 		self.gui_info = None
@@ -338,6 +338,10 @@ class SmaBroEngine:
 
 			if (self.config['option']['every_time_find_capture_area']):
 				raise KeyboardInterrupt()
+			else:
+				self.config['capture']['width'] = self.resource_size['width']
+				self.config['capture']['height'] = self.resource_size['height']
+
 
 	# キャプチャ対象の解像度の検出
 	def _find_resolution(self, index, resolution):
@@ -617,8 +621,9 @@ class SmaBroEngine:
 		if (not player_info is None):
 			Utils.width_full_print(f'\rloading... {history_path}')
 			self.power = [ player_info[0]['power'], player_info[1]['power'] ]
+			self.chara_name = [player['name'] for player in player_info[0:] ]
 			# キャラ別戦歴
-			self._store_battle_rate( [player['name'] for player in player_info[0:] ],
+			self._store_battle_rate( self.chara_name,
 				player_info[-1]['order'] > player_info[0]['order'],
 				player_info[-1]['order'] < player_info[0]['order'] )
 
@@ -1462,8 +1467,9 @@ class SmaBroEngine:
 
 		battle_streak_ratio_max = self.config['option']['battle_streak_ratio_max']
 		change_count = int(50 / len(battle_streak_ratio_max))
-		if (0 == self.animation_count % change_count):
-			streak_max = battle_streak_ratio_max[int(40 / self.animation_count - 1)]
+		if (0 == self.animation_count % change_count or 50 == self.animation_count):
+			self.logger.debug(f'make animation_retry {self.animation_count} / {change_count}')
+			streak_max = battle_streak_ratio_max[int(50 / self.animation_count - 1)]
 			power_history = self.power_history[self.chara_name[0]][::-1]
 			power_history = power_history[0:streak_max]
 
@@ -1511,10 +1517,11 @@ class SmaBroEngine:
 
 		if (FrameState.FS_BATTLE_END == self.frame_state and 50 != self.animation_count):
 			self.animation_count = 50 # _animation_what_character に必要な初期化
+			print('ready _animation_retry')
 
-		if (self.frame_state in {FrameState.FS_RESULT, FrameState.FS_SAVED} and
-			2 < len(self.power_history[self.chara_name[0]]) and
-			self._is_loading_frame()):
+		if ( (self.frame_state in {FrameState.FS_RESULT, FrameState.FS_SAVED} and
+			2 < len(self.power_history[self.chara_name[0]]) and self._is_loading_frame() ) or 
+			(self.frame_state == FrameState.FS_UNKNOWN) ):
 			self._animation_retry()
 
 	# guiやanimationのための基盤の作成
@@ -1599,9 +1606,9 @@ class SmaBroEngine:
 		self._load_config()
 		self._load_resources()
 		self._default_battle_params()
-		self._load_historys()
 		self._init_capture_area()
 		self._default_battle_params()
+		self._load_historys()
 
 	# 終了処理
 	def _finalize(self):
