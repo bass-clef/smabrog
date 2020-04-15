@@ -215,7 +215,7 @@ class SmaBroEngine:
 
 		self.ready_to_fight_name_power_mask = cv2.imread(+'resource/ready_to_fight_name_power_mask.png')
 
-		self.ready_ok_mask = cv2.imread(+'resource/ready_ok_mask.png')
+		self.ready_ok_mask = cv2.imread(+'resource/ready_ok_mask.png', cv2.IMREAD_UNCHANGED)
 		self.ready_ok_color = cv2.imread(+'resource/ready_ok_color.png')
 		self.ready_ok_name_mask = cv2.imread(+'resource/ready_ok_name_mask.png', cv2.IMREAD_GRAYSCALE)
 		self.entry_name_unknown = cv2.imread(+'resource/entry_name_unknown.png', cv2.IMREAD_GRAYSCALE)
@@ -1012,9 +1012,9 @@ class SmaBroEngine:
 
 	# [対戦相手募集中 -> もうすぐ開始]画面の検出
 	def _is_ready_ok_frame(self):
-		self.ratio, _ = Utils.match_masked_color_image(self.capture_image, self.ready_ok_color, self.ready_ok_mask)
+		self.ratio, _ = Utils.match_masked_color_image(self.capture_image, self.ready_ok_color, self.ready_ok_mask, is_trans=True)
 		self.ratio = round(float(self.ratio), 3)
-		return 0.95 <= self.ratio
+		return 0.97 <= self.ratio
 
 	# 4人版の[準備OK]画面の検出
 	def _is_with_4_battle_frame(self):
