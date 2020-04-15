@@ -3,10 +3,10 @@
         "capture": {
             "title": "",
             "title_back": "MonsterX U3.0R",
-            "width": 1920,
-            "height": 1080,
-            "x": 0,
-            "y": 0
+            "width": 848,
+            "height": 477,
+            "x": 71,
+            "y": 58
         },
         "log": {
             "headers": {
@@ -95,6 +95,7 @@
                 "GEKKOUGA": "ゲッコウガ",
                 "HERO": "勇者",
                 "ICECLIMBER": "アイスクライマー",
+                "IGGY": "イギー",
                 "IKE": "アイク",
                 "INKLING": "インクリング",
                 "JOKER": "ジョーカー",

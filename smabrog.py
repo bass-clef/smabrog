@@ -104,7 +104,7 @@ class Utils:
 	# image と color_image をマッチングテンプレートで比較して一番確率が高い 確率,座標 を返す
 	# @param Image mask_image		指定した場合は image を事前にマスク処理する
 	#								is_trans=True の場合は透過色用のマスクとして使用する
-	def match_masked_color_image(image, color_image, mask_image=None, is_trans=False, method=cv2.TM_CCOEFF_NORMED):
+	def match_masked_color_image(image, color_image, mask_image=None, is_trans=False, method=cv2.TM_CCOEFF_NORMED, raw_result=False):
 		convert_image = image.copy()
 		if (is_trans):
 			if (mask_image is None):
@@ -131,13 +131,18 @@ class Utils:
 				convert_image = cv2.bitwise_and(convert_image, mask_image)
 			result = cv2.matchTemplate(convert_image, color_image, method)
 
+		if (raw_result):
+			return result
+
 		_, ratio, _, pos = cv2.minMaxLoc(result)
 		return ratio, pos
 
 	# consoleの幅いっぱいに空白をつめて表示 (デフォルトCRすると前の文字が残ってて読みづらいため)
 	def width_full_print(message, carriage_return=True, logger_func=None):
 		columns, _ = os.get_terminal_size()
-		m_len = len(message) + len([(c) for c in message if (unicodedata.east_asian_width(c) in 'FWA')])
+		m_len = 0
+		for c in message:
+			m_len += 2 if unicodedata.east_asian_width(c) in 'FWA' else 1
 		print('\r' if carriage_return else '', message, ' ' * (columns - m_len - 1), end='')
 
 		if (not logger_func is None):
@@ -341,6 +346,7 @@ class SmaBroEngine:
 			return 0.0, None, 0, 0, 0, 0
 
 		ratio, convert_image, x, y = self._find_capture_area(resolution[0], resolution[1])
+		Utils.width_full_print(f'\r {resolution[0]}x{resolution[1]}...')
 		if (ratio < 0.99):
 			return 0.0, None, 0, 0, 0, 0
 
@@ -373,30 +379,44 @@ class SmaBroEngine:
 		# 解像度を見つけてから誤差を調整して探索
 		x = y = 0
 		for key, color_image in enumerate(self.ready_to_fight_trans_color):
-			_, pos = Utils.match_masked_color_image(convert_image, color_image,
-				self.ready_to_fight_trans_mask, is_trans=True)
-			capture_area_image = convert_image[ pos[1]:int(pos[1]+self.resource_size['height']), pos[0]:int(pos[0]+self.resource_size['width']) ]
-			is_ready_frame, _ = self._is_ready_frame(capture_area_image)
-			if ( not is_ready_frame ):
-				continue
+			# デバッグ途中に特殊な環境での意味のわからない、これは一致するのぉ？？？、という条件が一致して
+			# 本来取得すべき座標が見逃されていたものがあったため、
+			# 97%以上の[READY to FIGHT]の座標を10件まで列挙して、
+			# それから _is_ready_frame かけて合格したやつをさらに下記で微調整する
+			result = Utils.match_masked_color_image(convert_image, color_image,
+				self.ready_to_fight_trans_mask, is_trans=True, raw_result=True)
+			pos_list = numpy.where(0.96 <= result)
+			pos_list = list(zip( *pos_list[::-1] ))
+			ratio_pos_list = list(zip( [ result[pt[1]][pt[0]] for pt in pos_list ], pos_list ))
+			ratio_pos_list = numpy.sort(ratio_pos_list, axis=0)[0:9]
 
-			# より正確な位置を特定
+			if (len(ratio_pos_list) < 1):
+				break
+
 			p_ratio = {}
-			for add_y in [-1, 0, 1]:
-				for add_x in [-1, 0, 1, 2]:
-					x = int((pos[0]) * width_magnification) + add_x
-					y = int((pos[1]) * height_magnification) + add_y
-					if (x < 0 or y < 0 or desktop_height < y+height or desktop_width < x+width):
-						continue
+			for result_ratio, pos in ratio_pos_list:
+				capture_area_image = convert_image[ pos[1]:int(pos[1]+self.resource_size['height']), pos[0]:int(pos[0]+self.resource_size['width']) ]
 
-					capture_area_image = cv2.resize(capture_image[ y:y+height, x:x+width ], dsize=(self.resource_size['width'], self.resource_size['height']))
-					is_ready_frame, ratio = self._is_ready_frame(capture_area_image)
-					if ( is_ready_frame ):
-						p_ratio[tuple([add_x, add_y])] = ratio
+				# より正確な位置を特定
+				base_x = int(pos[0] * width_magnification)
+				base_y = int(pos[1] * height_magnification)
+				for add_y in [-1, 0, 1]:
+					for add_x in [-1, 0, 1]:
+						x = base_x + add_x
+						y = base_y + add_y
+						if (x < 0 or y < 0 or desktop_height < y+height or desktop_width < x+width):
+							continue
+
+						capture_area_image = cv2.resize(capture_image[ y:y+height, x:x+width ], dsize=(self.resource_size['width'], self.resource_size['height']))
+						is_ready_frame, ratio = self._is_ready_frame(capture_area_image)
+						if ( is_ready_frame ):
+							p_ratio[tuple([x, y])] = ratio
+
+			if (len(p_ratio) < 1):
+				break
 
 			p, result_ratio = max( p_ratio.items(), key=lambda x:x[1] )
-			x = int(pos[0] * width_magnification) + p[0]
-			y = int(pos[1] * height_magnification) + p[1]
+			x, y = p[0:2]
 			break
 
 		return result_ratio, convert_image, x, y
@@ -1463,7 +1483,7 @@ class SmaBroEngine:
 			axlegend = self.gui_info['ax'].legend()
 			axlegend.get_frame().set_edgecolor('#CFCFCF')
 			for axtext in axlegend.get_texts():
-			    axtext.set_color('gray')
+				axtext.set_color('gray')
 
 			self.gui_info['fig'].canvas.draw()
 			image = numpy.array(self.gui_info['fig'].canvas.renderer.buffer_rgba())
