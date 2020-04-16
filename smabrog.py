@@ -350,7 +350,6 @@ class SmaBroEngine:
 			return 0.0, None, 0, 0, 0, 0
 
 		ratio, convert_image, x, y = self._find_capture_area(resolution[0], resolution[1])
-		Utils.width_full_print(f'\r {resolution[0]}x{resolution[1]}...')
 		if (ratio < 0.99):
 			return 0.0, None, 0, 0, 0, 0
 
@@ -385,14 +384,14 @@ class SmaBroEngine:
 		for key, color_image in enumerate(self.ready_to_fight_trans_color):
 			# デバッグ途中に特殊な環境での意味のわからない、これは一致するのぉ？？？、という条件が一致して
 			# 本来取得すべき座標が見逃されていたものがあったため、
-			# 97%以上の[READY to FIGHT]の座標を10件まで列挙して、
+			# 97%以上の[READY to FIGHT]の座標を25件まで列挙して、
 			# それから _is_ready_frame かけて合格したやつをさらに下記で微調整する
 			result = Utils.match_masked_color_image(convert_image, color_image,
 				self.ready_to_fight_trans_mask, is_trans=True, raw_result=True)
 			pos_list = numpy.where(0.96 <= result)
 			pos_list = list(zip( *pos_list[::-1] ))
 			ratio_pos_list = list(zip( [ result[pt[1]][pt[0]] for pt in pos_list ], pos_list ))
-			ratio_pos_list = numpy.sort(ratio_pos_list, axis=0)[0:9]
+			ratio_pos_list = numpy.sort(ratio_pos_list, axis=0)[0:25]
 
 			if (len(ratio_pos_list) < 1):
 				break
@@ -404,8 +403,8 @@ class SmaBroEngine:
 				# より正確な位置を特定
 				base_x = int(pos[0] * width_magnification)
 				base_y = int(pos[1] * height_magnification)
-				for add_y in [-1, 0, 1]:
-					for add_x in [-1, 0, 1]:
+				for add_y in range(-1, 1):
+					for add_x in range(-1, 1):
 						x = base_x + add_x
 						y = base_y + add_y
 						if (x < 0 or y < 0 or desktop_height < y+height or desktop_width < x+width):
@@ -415,9 +414,16 @@ class SmaBroEngine:
 						is_ready_frame, ratio = self._is_ready_frame(capture_area_image)
 						if ( is_ready_frame ):
 							p_ratio[tuple([x, y])] = ratio
+							if (0.997 <= ratio):
+								# 確実に検出できてるため以後全部スキップ
+								break
+					else:
+						continue
+					break
 
 			if (len(p_ratio) < 1):
 				break
+			self.logger.debug(f'near detected resolution {width}x{height} : {p_ratio}')
 
 			p, result_ratio = max( p_ratio.items(), key=lambda x:x[1] )
 			x, y = p[0:2]
