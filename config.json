@@ -52,7 +52,7 @@
             "battle_informationGUI": true,
             "battle_information_animation": true,
             "battle_streak_ratio_max": [
-                50,
+                10,
                 50,
                 -1
             ],

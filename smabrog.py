@@ -1472,10 +1472,11 @@ class SmaBroEngine:
 			self.animation_image = numpy.zeros(self.capture_image.shape, dtype=numpy.uint8)
 
 		battle_streak_ratio_max = self.config['option']['battle_streak_ratio_max']
-		change_count = int(50 / len(battle_streak_ratio_max))
+		battle_streak_ratio_max_len = len(battle_streak_ratio_max)
+		change_count = int(50 / battle_streak_ratio_max_len)
 		if (0 == self.animation_count % change_count or 50 == self.animation_count):
 			self.logger.debug(f'make animation_retry {self.animation_count} / {change_count}')
-			streak_max = battle_streak_ratio_max[int(50 / self.animation_count - 1)]
+			streak_max = battle_streak_ratio_max[ int((50-self.animation_count) / change_count) ]
 			power_history = self.power_history[self.chara_name[0]][::-1]
 			power_history = power_history[0:streak_max]
 
@@ -1654,8 +1655,8 @@ class SmaBroEngine:
 			self._main_loop()
 		except KeyboardInterrupt:
 			pass
-#		except Exception as e:
-#			self._dump(e)
+		except Exception as e:
+			self._dump(e)
 		finally:
 			self._finalize()
 
