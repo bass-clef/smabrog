@@ -5,8 +5,8 @@
             "title_back": "MonsterX U3.0R",
             "width": 640,
             "height": 360,
-            "x": 27,
-            "y": 698
+            "x": 40,
+            "y": 692
         },
         "log": {
             "headers": {
@@ -60,7 +60,7 @@
             "exit_not_found_capture": false,
             "find_capture_area": true,
             "found_capture_area_fixed": false,
-            "every_time_find_capture_area": true
+            "every_time_find_capture_area": false
         },
         "resource": {
             "font": {

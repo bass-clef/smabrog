@@ -21,6 +21,7 @@ import logging
 import matplotlib
 from matplotlib import animation
 import matplotlib.pyplot as plt
+import multiprocessing
 import numpy
 import os
 from pathlib import Path
@@ -1524,7 +1525,6 @@ class SmaBroEngine:
 
 		if (FrameState.FS_BATTLE_END == self.frame_state and 50 != self.animation_count):
 			self.animation_count = 50 # _animation_what_character に必要な初期化
-			print('ready _animation_retry')
 
 		if ( (self.frame_state in {FrameState.FS_RESULT, FrameState.FS_SAVED} and
 			2 < len(self.power_history[self.chara_name[0]]) and self._is_loading_frame() ) or 
@@ -1672,6 +1672,9 @@ if __name__ == '__main__':
 
 	# strさん にお猿さんの呪いの実で +単項演算子 で パッケージ?コンパイル済みリソース? へのアクセスを処理してもらうようにする
 	curse(str, '__pos__', _resource)
+
+	# exe にした時に multi process だと exe 自体を新しく起動しようとするバグ回避
+	multiprocessing.freeze_support()
 
 	# main engine
 	engine = SmaBroEngine()
