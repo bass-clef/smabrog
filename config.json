@@ -60,7 +60,7 @@
             "exit_not_found_capture": false,
             "find_capture_area": true,
             "found_capture_area_fixed": false,
-            "every_time_find_capture_area": false
+            "every_time_find_capture_area": true
         },
         "resource": {
             "font": {

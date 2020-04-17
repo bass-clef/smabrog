@@ -6,6 +6,11 @@ Auther : Humi@bass_clef_
 
 """
 
+
+import warnings
+# matplotlib から exe 起動時に警告が出るのを抑制する
+warnings.filterwarnings('ignore', '(?s).*MATPLOTLIBDATA.*', category=UserWarning)
+
 from collections import Counter, defaultdict, OrderedDict
 from ctypes import *
 from ctypes.wintypes import *
