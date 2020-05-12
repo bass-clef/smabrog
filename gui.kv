@@ -1,0 +1,43 @@
+#:import ew kivy.uix.effectwidget
+
+<Button>:
+	text_size:	self.size
+<Label>:
+	text_size:	self.size
+	font_size:	15
+	markup:		True
+
+FloatLayout:
+	size:		640, 480
+	on_update:
+		streak_name = (app.var.config['option']['battle_information']['streak_loses'] if app.var.battle_streak_rate < 0 else app.var.config['option']['battle_information']['streak_wins'])
+		streak.text = f'{abs(app.var.battle_streak_rate)} {streak_name}'
+
+		streak_rate.text = f'{app.var.battle_streak_ratio[0]["length"]}戦中 勝:{app.var.battle_streak_ratio[0]["win"]}% 負:{app.var.battle_streak_ratio[0]["lose"]}%'
+		
+		state.text = f'({app.var.ratio}){app.var.FrameState(app.var.frame_state + 1).name}'
+
+	Label:
+		pos:	10, 340
+		on_update:
+			self.text = f'{app.var.animation_state.name}({app.var.animation_count})'
+
+	# N 連勝
+	Button:
+		font_name:	'meiryo.ttc'
+		id:			streak
+		pos:		10, 30
+		font_size:	30
+		text_size:	self.size
+		size:		self.text_size[0], 40
+		size_hint:	None, None
+		outline_width:		3
+		outline_color:		0, 100, 175,
+		background_color:	0, 0, 0, 0
+	# 勝率
+	Label:
+		id:			streak_rate
+	# 状態
+	Label:
+		id:			state
+		halign:		'right'

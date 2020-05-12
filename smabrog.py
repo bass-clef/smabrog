@@ -7,9 +7,11 @@ Auther : Humi@bass_clef_
 """
 
 
+import os
 import warnings
 # matplotlib から exe 起動時に警告が出るのを抑制する
 warnings.filterwarnings('ignore', '(?s).*MATPLOTLIBDATA.*', category=UserWarning)
+os.environ['KIVY_NO_CONSOLELOG'] = '1'
 
 from collections import Counter, defaultdict, OrderedDict
 from ctypes import *
@@ -22,27 +24,36 @@ from enum import IntEnum
 from forbiddenfruit import curse
 import japanize_matplotlib
 import json
+from kivy.app import App
+from kivy.clock import Clock
+from kivy.config import Config
+from kivy.core.text import LabelBase, DEFAULT_FONT
+from kivy.factory import Factory
+from kivy.graphics.texture import Texture
+from kivy.graphics import Rectangle
+from kivy.lang import Builder
+from kivy.logger import Logger as kivy_logger
+from kivy.resources import resource_add_path
+from kivy.uix.widget import Widget
 import logging
 import matplotlib
 from matplotlib import animation
 import matplotlib.pyplot as plt
 import multiprocessing
 import numpy
-import os
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageGrab
 import pyocr
 import pyocr.builders
 import random
 import re
+import signal
 import sys
 import time
 import traceback
 import unicodedata
 import urllib
 import urllib.request
-
-
 
 class Utils:
 	@staticmethod
@@ -69,9 +80,74 @@ class Utils:
 		new_image = Image.fromarray(new_image)
 		return new_image
 
-	# 無効な文字列の削除
-	def replace_invalid_char(word):
-		return re.sub(r'[\W|,|.]', '', word)
+	# 透過色付きでない image から黒のみを透過色とした mask を作成
+	def make_trans_mask_noalpha_channel_(image):
+		channels = cv2.split(image)
+		zero_channel = numpy.zeros_like(channels[0])
+		mask = numpy.array(channels[3])
+		mask[channels[3] == 0] = 1
+		mask[channels[3] == 100] = 0
+		return cv2.merge([zero_channel, zero_channel, zero_channel, mask])
+
+	# dest の上に透過色に応じて original_source を pos の位置に貼り付ける
+	def paste_image_pos_(dest, original_source, pos):
+		s_h, s_w = original_source.shape[0:2]
+		d_h, d_w = dest.shape[0:2]
+		x = pos[0]
+		y = pos[1]
+
+		if (original_source.shape[2] == 4):
+			source = original_source
+			mask = original_source[:,:,3]
+		else:
+			source = cv2.cvtColor(original_source, cv2.COLOR_RGB2RGBA)
+			mask = cv2.cvtColor( Utils.make_trans_mask_noalpha_channel(source), cv2.COLOR_RGBA2GRAY)
+
+		mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+		mask = mask / 255.0
+
+		dest[ y:y+s_h, x:x+s_w ] = dest[ y:y+s_h, x:x+s_w ] * 1 - mask
+		masked_image = cv2.bitwise_not(cv2.cvtColor( Utils.pil2cv(source[:,:,:3] * mask), cv2.COLOR_BGR2RGB ))
+
+		dest_mask = cv2.cvtColor( Utils.pil2cv(dest[ y:y+s_h, x:x+s_w ]), cv2.COLOR_BGR2RGB )
+		dest[ y:y+s_h, x:x+s_w ] = cv2.bitwise_and(masked_image, dest_mask)
+		return dest
+
+	# 透過色付きでない image から color_code を透過色とした mask を作成
+	def make_trans_mask_noalpha_channel(image, color_code=(0,0,0,255), distance=0):
+		lower_color = numpy.array(color_code)
+		upper_color = numpy.array(color_code)
+		upper_color[:-1] += distance
+		mask = cv2.inRange(image, lower_color, upper_color)
+		mask = cv2.bitwise_not(mask)
+
+		b = image[:,:,0]
+		g = image[:,:,1]
+		r = image[:,:,2]
+		return cv2.merge((b, g, r, mask))
+
+	# dest の上に透過色に応じて original_source を pos の位置に貼り付ける
+	def paste_image_pos(original_dest, original_source, pos):
+		s_h, s_w = original_source.shape[0:2]
+		d_h, d_w = original_dest.shape[0:2]
+		x = pos[0]
+		y = pos[1]
+
+		if (original_source.shape[2] == 4):
+			source = original_source
+		else:
+			source = cv2.cvtColor(original_source, cv2.COLOR_RGB2RGBA)
+
+		mask = Utils.make_trans_mask_noalpha_channel(source)
+
+		if (original_dest.shape[2] == 4):
+			dest = original_dest
+		else:
+			dest = cv2.cvtColor(original_dest, cv2.COLOR_RGB2RGBA)
+
+		dest[ y:y+s_h, x:x+s_w ] = mask
+		return cv2.cvtColor(dest, cv2.COLOR_RGBA2RGB)
+
 
 	# 任意の四角形の中にある何かの輪郭にそって image を加工して返す
 	# @param bool filled		True にすると minsize 未満の面積の点を (255,255,255) で塗りつぶす
@@ -114,12 +190,15 @@ class Utils:
 		convert_image = image.copy()
 		if (is_trans):
 			if (mask_image is None):
+				transparent_mask = Utils.make_trans_mask_noalpha_channel(color_image)
+				"""
 				channels = cv2.split(color_image)
 				zero_channel = numpy.zeros_like(channels[0])
 				mask = numpy.array(channels[3])
 				mask[channels[3] == 0] = 1
 				mask[channels[3] == 100] = 0
 				transparent_mask = cv2.merge([zero_channel, zero_channel, zero_channel, mask])
+				"""
 			else:
 				transparent_mask = mask_image.copy()
 				if (transparent_mask.shape[2] == 3):
@@ -143,6 +222,10 @@ class Utils:
 		_, ratio, _, pos = cv2.minMaxLoc(result)
 		return ratio, pos
 
+	# 無効な文字列の削除
+	def replace_invalid_char(word):
+		return re.sub(r'[\W|,|.]', '', word)
+
 	# consoleの幅いっぱいに空白をつめて表示 (デフォルトCRすると前の文字が残ってて読みづらいため)
 	def width_full_print(message, carriage_return=True, logger_func=None):
 		columns, _ = os.get_terminal_size()
@@ -154,25 +237,99 @@ class Utils:
 		if (not logger_func is None):
 			logger_func(message)
 
-class FrameState(IntEnum):
-	FS_UNKNOWN = 0
-	FS_READY_TO_FIGHT = 1
-	FS_READY_OK = 2
-	FS_WHAT_CHARACTER = 3
-	FS_BATTLE = 4
-	FS_BATTLE_END = 5
-	FS_RESULT = 6
-	FS_SAVED = 7
-	FS_LOADING = 8
+class KivyWidget(Widget):
+	def __init__(self, **kwargs):
+		super(KivyWidget, self).__init__(**kwargs)
+
+class KivyApp(App):
+	def __init__(self, **kwargs):
+		super(KivyApp, self).__init__(**kwargs)
+		self.var = None
+		self.root = None
+		self.file_path = None
+		self.default_on_window = None
+
+	def _enum_dispatch(self, root):
+		root.dispatch('on_update')
+		if ( hasattr(root, 'children') ):
+			for child in root.children:
+				self._enum_dispatch(child)
+
+	def init(self, file_path, var):
+		self.file_path = file_path
+		self.var = var
+
+	def update(self, deltatime):
+		with self.root.canvas.before:
+			if (self.var.animation_texture is None):
+				self.var.animation_texture = Texture.create(size=self.var.black_image.shape[-2::-1])
+			else:
+				image = self.var.black_image 
+				if (not self.var.gui_info['image'] is None):
+					image = self.var.gui_info['image']
+
+				image = cv2.flip(image, 0)
+				self.var.animation_texture.blit_buffer( image.tostring() )
+				Rectangle(texture=self.var.animation_texture, pos=(0, 0), size=image.shape[-2::-1] )
+
+		with self.root.canvas:
+			self._enum_dispatch(self.root)
+
+	def build(self):
+		with open(self.file_path, encoding='utf-8') as file:
+			kivy_string = file.read()
+
+		root = Builder.load_string( kivy_string )
+		if (root is None):
+			Utils.width_full_print('kivy root is None', self.var.logger.info)
+			return
+
+		self.root = KivyWidget()
+		self.root.add_widget(root)
+		Clock.schedule_interval(self.update, 1/self.var.config['resource']['kivy']['fps'])
+		return self.root
+
+	def close(self, **kwargs):
+		#self.var.config['resource']['kivy']['pos'] = [0, 20]
+		Utils.width_full_print('stoped')
+		return super(KivyApp, self).close(**kwargs)
+
 
 class SmaBroEngine:
+	FrameState = IntEnum(
+		'FrameState',
+		['FS_UNKNOWN',
+		'FS_READY_TO_FIGHT',
+		'FS_READY_OK',
+		'FS_WHAT_CHARACTER',
+		'FS_BATTLE',
+		'FS_BATTLE_END',
+		'FS_RESULT',
+		'FS_SAVED',
+		'FS_LOADING',
+		'FS_END_STATE'
+		])
+
+	AnimationState = IntEnum(
+		'AnimationState',
+		['AS_NONE',
+		'AS_CHARACTER_RATE_GRAPH_BEGIN',
+		'AS_CHARACTER_RATE_GRAPH',
+		'AS_STREAK_RATE_BEGIN',
+		'AS_STREAK_RATE',
+		'AS_END_STATE'
+		])
+
 	def __init__(self):
 		self.logger = logging.getLogger(__name__)
 		self.logger.setLevel(logging.DEBUG)
 		now = datetime.datetime.now().strftime("%Y_%m_%d_%H")
 		log_handler = logging.FileHandler(filename=f'log/{now}.log')
-		log_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)8s %(message)s'))
+		log_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)8s %(message)s', datefmt='%M:%S'))
 		self.logger.addHandler(log_handler)
+
+		# kivy のログを同じファイルに書き込む
+		kivy_logger.addHandler(log_handler)
 
 	# コンフィグの読み込み
 	def _load_config(self):
@@ -184,32 +341,55 @@ class SmaBroEngine:
 
 	# リソースの読み込み/作成
 	def _load_resources(self):
-		# 外部リソース
-		tools = pyocr.get_available_tools()
-		if len(tools) == 0:
-			self.logger.error('No OCR tool found')
-			sys.exit(1)
-		self.ocr_tool = tools[0]
-
 		# 変数リソース
 		self.chara = self.config['resource']['character']
 		self.team_color_list = ['red', 'blue', 'yellow', 'green']
 		self.resource_size = { 'width':640, 'height':360 }
 		self.capture_image = None
 		self.sync = 0
-		self.battle_rate = defaultdict()
 		self.back_character = ''
 		self.back_power = 0
+		self.battle_rate = defaultdict()
 		self.battle_streak_rate = 0	# 正数で連勝数,負数で連敗数
 		self.battle_history = {}
 		self.power_history = {}
 		self.power_limit = { 'min':-1, 'max':-1 }
 		self.time_zero = datetime.datetime(1900, 1, 1, 0, 0)
-		self.animation_count = 50
-		self.animation_calc = 0
-		self.animation_image = None
 		self.gui_info = None
 		self.battle_streak_ratio = [ {'win':0.0, 'lose':0.0, 'length':0} for _ in self.config['option']['battle_streak_ratio_max'] ]
+		self.black_image = Utils.pil2cv( numpy.zeros((self.resource_size['height'], self.resource_size['width'], 3)) )
+
+		self.animation_state = self.AnimationState.AS_NONE
+		self.animation_count = 0
+		self.animation_calc = 0
+		self.animation_image = None
+		self.animation_texture = None
+		self._make_interface_canvas()
+
+		# フォント
+		self.font = ImageFont.truetype(self.config['resource']['font']['normal'][0], self.config['resource']['font']['normal'][1])
+		self.small_font = ImageFont.truetype(self.config['resource']['font']['small'][0], self.config['resource']['font']['small'][1])
+
+		# これとは別で管理したい並列処理は with で別途記述 (スレッドを取り合ってしまい処理が進まずデッドロックになるため)
+		self.executor = concurrent.futures.ThreadPoolExecutor(self.config['option']['max_workers'])
+		self.process_executor = concurrent.futures.ProcessPoolExecutor(self.config['option']['max_workers'])
+
+		""" 外部リソース """
+		# tesseract-OCR
+		tools = pyocr.get_available_tools()
+		if len(tools) == 0:
+			self.logger.error('No tesseract-OCR tool found')
+			sys.exit(1)
+		self.ocr_tool = tools[0]
+		# kivy
+		Config.set('graphics', 'left', self.config['resource']['kivy']['pos'][0])
+		Config.set('graphics', 'top', self.config['resource']['kivy']['pos'][1])
+		for option in self.config['resource']['kivy']['option']:
+			Config.set(option[0], option[1], option[2])
+		LabelBase.register(DEFAULT_FONT, self.config['resource']['font']['normal'][0])
+		self.kivy_app = KivyApp()
+		self.kivy_app.init(self.config['resource']['kivy']['path'], self)
+		self.kivy_app.title = self.config['resource']['kivy']['title']
 
 		# 解析に必要な画像リソース
 		self.loading_mask = cv2.imread(+'resource/loading_mask.png')
@@ -284,16 +464,14 @@ class SmaBroEngine:
 		#その他の画像リソース
 		self.smabro_icon = cv2.imread(+'resource/smabro_icon.png', cv2.IMREAD_UNCHANGED)
 
-		# フォント
-		self.font = ImageFont.truetype(self.config['resource']['font']['normal'][0], self.config['resource']['font']['normal'][1])
-		self.small_font = ImageFont.truetype(self.config['resource']['font']['small'][0], self.config['resource']['font']['small'][1])
-
-		self.executor = concurrent.futures.ThreadPoolExecutor(self.config['option']['max_workers'])
-		self.process_executor = concurrent.futures.ProcessPoolExecutor(self.config['option']['max_workers'])
-
 	# キャプチャに関する初期化
 	def _init_capture_area(self):
 		if (not self.config['option']['find_capture_area']):
+			if ( 0 == self.config['capture']['width'] and 0 == self.config['capture']['height'] ):
+				self.config['capture']['x'] = 0
+				self.config['capture']['y'] = 0
+				self.config['capture']['width'] = self.resource_size['width']
+				self.config['capture']['height'] = self.resource_size['height']
 			return
 		if (self.config['option']['every_time_find_capture_area']):
 			self.config['capture']['width'] = self.config['capture']['height'] = 0
@@ -347,7 +525,6 @@ class SmaBroEngine:
 			else:
 				self.config['capture']['width'] = self.resource_size['width']
 				self.config['capture']['height'] = self.resource_size['height']
-
 
 	# キャプチャ対象の解像度の検出
 	def _find_resolution(self, index, resolution):
@@ -646,11 +823,12 @@ class SmaBroEngine:
 		dirlist = [file for file in po.glob('*.json') if re.search(history_pattern, str(file))]
 
 		self.sync = 0
-		_ = list(self.executor.map(
-			self._load_history,
-			range(len(dirlist)),
-			dirlist
-			))
+		with concurrent.futures.ThreadPoolExecutor() as executor:
+			_ = list(executor.map(
+				self._load_history,
+				range(len(dirlist)),
+				dirlist
+				))
 
 		self.battle_streak_rate = 0
 
@@ -707,7 +885,7 @@ class SmaBroEngine:
 		self.player_order_ratio = [0.99] * player_count
 		self.time_stock_ratio	= []
 
-		self.frame_state		= FrameState.FS_UNKNOWN
+		self.frame_state		= self.FrameState.FS_UNKNOWN
 		self.entry_name			= [''] * player_count
 		self.rule_name			= 'stock'	# stock or time
 		self.group_name			= 'smash'	# smash or team
@@ -733,7 +911,7 @@ class SmaBroEngine:
 	""" capture系 hoge frame を検出した時にする処理 検出時間(昇順) """
 	# [READY to FIGHT]画面
 	def _capture_ready_to_fight_frame(self):
-		if (self.frame_state == FrameState.FS_READY_TO_FIGHT):
+		if (self.frame_state == self.FrameState.FS_READY_TO_FIGHT):
 			return
 		if (self.power[0] < 0):
 			# 初期値 or エラーは計算しない
@@ -1008,7 +1186,7 @@ class SmaBroEngine:
 
 	# 試合終了
 	def _battle_end(self):
-		if (self.frame_state != FrameState.FS_BATTLE_END):
+		if (self.frame_state != self.FrameState.FS_BATTLE_END):
 			return
 		if ( all([(-1 == order) for order in self.player_order]) ):
 			# 順位が全く取れていない場合は何もしない(※これはイメージです の画像くらい違うものを検出してる可能性があるため)
@@ -1038,12 +1216,13 @@ class SmaBroEngine:
 		if (capture_image is None):
 			capture_image = self.capture_image
 
-		result = list(self.executor.map(
-			Utils.match_masked_color_image,
-			[capture_image, capture_image],
-			self.ready_to_fight_color,
-			[self.ready_to_fight_mask, self.ready_to_fight_mask]
-			))
+		with concurrent.futures.ThreadPoolExecutor() as executor:
+			result = list(executor.map(
+				Utils.match_masked_color_image,
+				[capture_image, capture_image],
+				self.ready_to_fight_color,
+				[self.ready_to_fight_mask, self.ready_to_fight_mask]
+				))
 		self.ratio = ratio = round(float(max([ _[0] for _ in result ])), 4)
 		return 0.99 <= ratio, ratio
 
@@ -1195,24 +1374,26 @@ class SmaBroEngine:
 
 	# ストックが表示されてる画面か
 	def _is_stock_number_frame(self):
-		result = list(self.executor.map(
-			Utils.match_masked_color_image,
-			[self.capture_image, self.capture_image],
-			[self.stock_hyphen_color_black, self.stock_hyphen_color_white],
-			[self.stock_hyphen_mask, self.stock_hyphen_mask]
-			))
+		with concurrent.futures.ThreadPoolExecutor() as executor:
+			result = list(executor.map(
+				Utils.match_masked_color_image,
+				[self.capture_image, self.capture_image],
+				[self.stock_hyphen_color_black, self.stock_hyphen_color_white],
+				[self.stock_hyphen_mask, self.stock_hyphen_mask]
+				))
 		self.ratio = round(float(max([ _[0] for _ in result ])), 3)
 		return 0.98 <= self.ratio
 
 	# [GAME SET][TIME UP]画面かどうか
 	def _is_game_end_frame(self):
-		result = list(self.executor.map(
-			Utils.match_masked_color_image,
-			[self.capture_image, self.capture_image],
-			[self.game_set_color, self.time_up_color],
-			[self.game_set_mask, self.time_up_mask],
-			[True, True]
-			))
+		with concurrent.futures.ThreadPoolExecutor() as executor:
+			result = list(executor.map(
+				Utils.match_masked_color_image,
+				[self.capture_image, self.capture_image],
+				[self.game_set_color, self.time_up_color],
+				[self.game_set_mask, self.time_up_mask],
+				[True, True]
+				))
 		self.ratio = round(float(max([ _[0] for _ in result ])), 3)
 		return 0.98 <= self.ratio
 
@@ -1232,13 +1413,14 @@ class SmaBroEngine:
 			order_ratio = [-1] * order_color_len
 			pos = [0,0] * order_color_len
 
-			result = list(self.process_executor.map(
-				Utils.match_masked_color_image,
-				[convert_image] * order_color_len,
-				self.result_player_order_color,
-				self.result_player_order_mask,
-				[True] * order_color_len
-				))
+			with concurrent.futures.ProcessPoolExecutor() as process_executor:
+				result = list(process_executor.map(
+					Utils.match_masked_color_image,
+					[convert_image] * order_color_len,
+					self.result_player_order_color,
+					self.result_player_order_mask,
+					[True] * order_color_len
+					))
 			order_ratio = [ round(float(ratio[0]), 3) for ratio in result ]
 			order = numpy.argmax(order_ratio)
 
@@ -1292,26 +1474,26 @@ class SmaBroEngine:
 			self._battle_end()
 			# (戦闘力の差分)
 			self._capture_ready_to_fight_frame()
-			self.frame_state = FrameState.FS_READY_TO_FIGHT
+			self.frame_state = self.FrameState.FS_READY_TO_FIGHT
 			return
-		elif (self.frame_state in {FrameState.FS_UNKNOWN}):
+		elif (self.frame_state in {self.FrameState.FS_UNKNOWN}):
 			return
 
-		if (self.frame_state in {FrameState.FS_READY_TO_FIGHT, FrameState.FS_RESULT, FrameState.FS_SAVED}):
+		if (self.frame_state in {self.FrameState.FS_READY_TO_FIGHT, self.FrameState.FS_RESULT, self.FrameState.FS_SAVED}):
 			# [まもなく開始]画面 (プレイヤー名)
 			if (self._is_ready_ok_frame()):
 				self._battle_end()
 				self._default_battle_params()
-				self.frame_state = FrameState.FS_READY_OK
+				self.frame_state = self.FrameState.FS_READY_OK
 				self._capture_ready_ok_frame(gray_image)
 
 			if (self._is_battle_retry_frame()):
-				if (self.frame_state == FrameState.FS_RESULT):
-					self.frame_state = FrameState.FS_SAVED
+				if (self.frame_state == self.FrameState.FS_RESULT):
+					self.frame_state = self.FrameState.FS_SAVED
 
 			return
 
-		if (self.frame_state == FrameState.FS_READY_OK):
+		if (self.frame_state == self.FrameState.FS_READY_OK):
 			if (2 == self.player_count):
 				# battle with 4 (人数を 2 から 4 へ変更,もはやプレイヤー名とか正確に取れないので無視する)
 				if (self._is_with_4_battle_frame()):
@@ -1319,30 +1501,31 @@ class SmaBroEngine:
 					entry_name = self.entry_name
 					self._default_battle_params(player_count=4)
 					self.entry_name = entry_name
-					self.frame_state = FrameState.FS_READY_OK
+					self.frame_state = self.FrameState.FS_READY_OK
 					return
 
 				# [{foo} vs {bar}]画面 (1on1,キャラクター名)
 				# TODO:開始時間をここでついでにとりたい
 				if (self._is_vs_frame()):
-					self.frame_state = FrameState.FS_WHAT_CHARACTER
+					self.frame_state = self.FrameState.FS_WHAT_CHARACTER
 					self._capture_character_name(gray_image)
+
 					_ = list(self.process_executor.map(cv2.imwrite, ['last_vs_character.png'], [self.capture_image]))
 
 			elif (4 == self.player_count):
 				# 大乱闘 or チーム乱闘 (smash or team,キャラクター名)
 				is_smash_or_team_frame = self._watch_smash_or_team_frame()
 				if (is_smash_or_team_frame):
-					self.frame_state = FrameState.FS_WHAT_CHARACTER
+					self.frame_state = self.FrameState.FS_WHAT_CHARACTER
 					self._capture_character_name(gray_image)
 					_ = list(self.process_executor.map(cv2.imwrite, ['last_vs_character.png'], [self.capture_image]))
 			return
 
-		if (self.frame_state == FrameState.FS_WHAT_CHARACTER):
+		if (self.frame_state == self.FrameState.FS_WHAT_CHARACTER):
 			# [.00]画面 (開始時間)
 			if (self._is_go_frame()):
 				self.logger.debug(f'_is_go_frame{self.ratio}')
-				self.frame_state = FrameState.FS_BATTLE
+				self.frame_state = self.FrameState.FS_BATTLE
 
 			# [時計マーク] {N}:00 [人マーク] {P} 画面
 			if (self._is_time_stock_frame()):
@@ -1350,11 +1533,11 @@ class SmaBroEngine:
 
 			return
 
-		if (self.frame_state == FrameState.FS_BATTLE):
+		if (self.frame_state == self.FrameState.FS_BATTLE):
 			# [GAME SET][TIME UP]画面
 			if (self._is_game_end_frame()):
 				self.logger.debug(f'_is_game_end_frame{self.ratio}')
-				self.frame_state = FrameState.FS_BATTLE_END
+				self.frame_state = self.FrameState.FS_BATTLE_END
 				return
 
 			# [0.0]% 監視 それ以外だと [1.0]% が代入される
@@ -1369,7 +1552,7 @@ class SmaBroEngine:
 
 			return
 
-		if (self.frame_state == FrameState.FS_BATTLE_END):
+		if (self.frame_state == self.FrameState.FS_BATTLE_END):
 			# [結果]画面 (戦闘力,勝敗)
 			is_result_frame = self._watch_reuslt_frame(gray_image)
 			if (self._is_battle_retry_frame()):
@@ -1379,7 +1562,7 @@ class SmaBroEngine:
 
 			if (is_result_frame):
 				self._battle_end()
-				self.frame_state = FrameState.FS_RESULT
+				self.frame_state = self.FrameState.FS_RESULT
 				_ = list(self.process_executor.map(cv2.imwrite, ['last_foo_vs_bar_power.png'], [self.capture_image]))
 
 			return
@@ -1399,7 +1582,7 @@ class SmaBroEngine:
 		streak_name = (self.config['option']['battle_information']['streak_loses'] if self.battle_streak_rate < 0 else self.config['option']['battle_information']['streak_wins'])
 		for name in ['gui_text', 'cui_text']:
 			battle_information_text[name] = self.config['option']['battle_information'][name].format(
-					frame=FrameState(self.frame_state + 1).name, ratio=self.ratio,
+					frame=self.FrameState(self.frame_state + 1).name, ratio=self.ratio,
 					entry_name=self.entry_name, group_name=self.group_name,
 					group_color=self.group_color,
 					chara_name=self.chara_name, stock=self.result_stock['count'],
@@ -1413,6 +1596,7 @@ class SmaBroEngine:
 		if (self.config['option']['battle_informationGUI']):
 			self.gui_info['image'] = Image.fromarray(self.gui_info['image'])
 
+			"""
 			draw = ImageDraw.Draw(self.gui_info['image'])
 			pos = tuple(self.config['option']['battle_information']['pos'])
 			if ( self.config['option']['battle_information']['bold'] != self.config['option']['battle_information']['back'] ):
@@ -1428,6 +1612,7 @@ class SmaBroEngine:
 				pos, battle_information_text['gui_text'], font=self.font,
 				fill=tuple(self.config['option']['battle_information']['color'])
 				)
+			"""
 
 			self.gui_info['image'] = numpy.array(self.gui_info['image'])
 			self.gui_info['image'] = Utils.pil2cv(self.gui_info['image'])
@@ -1438,7 +1623,7 @@ class SmaBroEngine:
 		return self.gui_info
 
 	# FS_WHAT_CHARACTER 中のアニメーション
-	def _animation_what_character(self):
+	def _character_rate_graph(self):
 		win = self.battle_rate[tuple(self.chara_name)]['win']
 		lose = self.battle_rate[tuple(self.chara_name)]['lose']
 		if (4 == self.animation_count):
@@ -1473,7 +1658,10 @@ class SmaBroEngine:
 		self.gui_info['image'] = Utils.pil2cv(self.gui_info['image'])
 
 	# FS_SAVED 後のアニメーション
-	def _animation_retry(self):
+	def _streak_rate(self):
+		if (len(self.power_history[self.chara_name[0]]) < 2):
+			return
+
 		if (50 == self.animation_count):
 			self.animation_image = numpy.zeros(self.capture_image.shape, dtype=numpy.uint8)
 
@@ -1506,40 +1694,81 @@ class SmaBroEngine:
 
 			self.gui_info['fig'].canvas.draw()
 			image = numpy.array(self.gui_info['fig'].canvas.renderer.buffer_rgba())
-			self.animation_image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
+			self.animation_image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
+
+		self.gui_info['image'] = Utils.paste_image_pos(self.gui_info['image'], self.animation_image, (0, 0))
 
 		self.animation_count -= 1 if 1 < self.animation_count else 0
 
-		self.gui_info['image'] = cv2.addWeighted(self.gui_info['image'], 1,
-			self.animation_image, 1, 0)
+
+	# self.animation_state == begin_animation_state で do_condition を満たしていれば,アニメーションする
+	# end_condition を満たしていると,デフォルトにする
+	# TODO:増えてきたらfor化
+	def _do_animation(self, begin_animation_state=AnimationState.AS_NONE, do_condition=False, end_condition=False):
+		if (end_condition):
+			if (self.animation_state == self.AnimationState(begin_animation_state+1) ):
+				# 自動終了処理
+				self.animation_state = self.AnimationState.AS_NONE
+			return
+
+		if (not do_condition):
+			if (end_condition):
+				# 主に事前準備でここにくる
+				self.animation_state = self.AnimationState.AS_NONE
+			if (self.animation_state == self.AnimationState.AS_NONE):
+				return
+
+		# キャラ別勝率のグラフ
+		if (self.animation_state == self.AnimationState.AS_CHARACTER_RATE_GRAPH):
+			self._character_rate_graph()
+		# キャラ別戦歴のグラフ
+		if (self.animation_state == self.AnimationState.AS_STREAK_RATE):
+			self._streak_rate()
+
+		if (self.animation_state == self.AnimationState.AS_NONE):
+			if (begin_animation_state in {self.AnimationState.AS_CHARACTER_RATE_GRAPH_BEGIN, self.AnimationState.AS_CHARACTER_RATE_GRAPH}):
+				# _character_rate_graph に必要な初期化
+				self.animation_count = 4
+				self.animation_state = self.AnimationState.AS_CHARACTER_RATE_GRAPH
+
+		if (self.animation_state == self.AnimationState.AS_NONE):
+			if (begin_animation_state == self.AnimationState.AS_STREAK_RATE_BEGIN):
+				# _streak_rate に必要な初期化
+				self.animation_count = 50
+				self.animation_state = self.AnimationState.AS_STREAK_RATE
+
+		if (not do_condition):
+			if (begin_animation_state == self.AnimationState.AS_STREAK_RATE):
+				self.animation_count = 0
+				self.animation_state = self.AnimationState.AS_NONE
 
 	# アニメーション が主な情報
-	def _user_interface_animation(self):
+	def _auto_begin_animation(self):
 		if (not self.config['option']['battle_information_animation']):
 			return
 		if (2 != self.player_count):
 			# 非対応
 			return
 
-		if (FrameState.FS_READY_OK == self.frame_state and 4 != self.animation_count):
-			self.animation_count = 4 # _animation_what_character に必要な初期化
-
 		# [VS]画面中に キャラ別勝率を表示する
-		if (FrameState.FS_WHAT_CHARACTER == self.frame_state and -10 < self.animation_count):
-			self._animation_what_character()
+		self._do_animation(
+			self.AnimationState.AS_CHARACTER_RATE_GRAPH_BEGIN,
+			self.FrameState.FS_WHAT_CHARACTER == self.frame_state and -10 < self.animation_count,
+			self.frame_state in {self.FrameState.FS_READY_OK, self.FrameState.FS_BATTLE}
+		)
 
-		if (FrameState.FS_BATTLE_END == self.frame_state and 50 != self.animation_count):
-			self.animation_count = 50 # _animation_what_character に必要な初期化
-
-		if ( (self.frame_state in {FrameState.FS_RESULT, FrameState.FS_SAVED} and
-			2 < len(self.power_history[self.chara_name[0]]) and self._is_loading_frame() ) or 
-			(self.frame_state == FrameState.FS_UNKNOWN) ):
-			self._animation_retry()
+		# 結果が終わったあとのローディング画面,キャプチャ画面が検出されていない初期状態 でキャラ別戦歴のグラフを表示する
+		self._do_animation(
+			self.AnimationState.AS_STREAK_RATE_BEGIN,
+			(self._is_loading_frame() and self.frame_state in {self.FrameState.FS_RESULT, self.FrameState.FS_SAVED}) or 
+				(self.frame_state == self.FrameState.FS_UNKNOWN),
+			self.frame_state in {self.FrameState.FS_RESULT, self.FrameState.FS_READY_TO_FIGHT}
+		)
 
 	# guiやanimationのための基盤の作成
 	def _make_interface_canvas(self):
 		if (self.gui_info is None):
-			gui_image = numpy.zeros(self.capture_image.shape, dtype=numpy.uint8)
+			gui_image = numpy.zeros( (self.resource_size['height'], self.resource_size['width'], 3), dtype=numpy.uint8 )
 			gui_image[:] = tuple(self.config['option']['battle_information']['back'])
 			gui_image = numpy.array(gui_image)
 			gui_image = Utils.pil2cv(gui_image)
@@ -1577,20 +1806,11 @@ class SmaBroEngine:
 		x = int((w-si_w)/2)
 		y = int((h-si_h)/2)
 		# iconの透過色付きの貼り付け
-		mask = self.smabro_icon[:,:,3]
-		mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-		mask = mask / 255.0
-		smabro_icon = self.smabro_icon[:,:,:3]
-		image[ y:y+si_h, x:x+si_w ] = image[ y:y+si_h, x:x+si_w ] * 1 - mask
-		smabro_icon = cv2.bitwise_not(cv2.cvtColor( Utils.pil2cv(smabro_icon * mask), cv2.COLOR_BGR2RGB ))
-		smabro_area = cv2.cvtColor( Utils.pil2cv(image[ y:y+si_h, x:x+si_w ]), cv2.COLOR_BGR2RGB )
-		image[ y:y+si_h, x:x+si_w ] = cv2.bitwise_and(smabro_icon, smabro_area)
+		self.animation_image = Utils.paste_image_pos(image, self.smabro_icon, (x, y))
 
-		self.animation_image = image
 
 	# 1 frame 中の処理
 	def _main_frame(self):
-		# 1 frame capture
 		self._capture_window()
 
 		self._capture_any_frame()
@@ -1603,14 +1823,10 @@ class SmaBroEngine:
 			else:
 				self.gui_info['image'][:] = tuple(self.config['option']['battle_information']['back'])
 
-		self._user_interface_animation()
+		self._do_animation()
+		self._auto_begin_animation()
 
 		self._user_interface_text()
-
-		if (self.config['option']['battle_informationGUI']):
-			plt.close()
-			cv2.imshow(self.config['option']['battle_information']['caption'], self.gui_info['image'])
-
 
 	# 初期化処理
 	def _initialize(self):
@@ -1633,17 +1849,22 @@ class SmaBroEngine:
 
 	# main loop
 	def _main_loop(self):
-		Utils.width_full_print('ready.', logger_func=self.logger.info)
+		time.sleep(0.1)
+		Utils.width_full_print('main ready.', logger_func=self.logger.info)
 		while( True ):
 			self._main_frame()
 			self._main_ui_frame()
 
-			cv2.waitKey(1)
+			cv2.waitKey(0)
 
-			# GUIを表示しているときだけ WM_CLOSE で終了する
-			if ( self.config['option']['battle_informationGUI'] ):
-				if ( cv2.getWindowProperty( self.config['option']['battle_information']['caption'], cv2.WND_PROP_VISIBLE ) < 1 ):
-					break
+			# kivy の終了を監視
+			if (self.kivy_app is None):
+				break
+
+	def _kivy_loop(self):
+		Utils.width_full_print('kivy ready.', logger_func=self.logger.info)
+		self.kivy_app.run()
+		self.kivy_app = None
 
 	# exeception dump
 	def _dump(self, err):
@@ -1657,9 +1878,17 @@ class SmaBroEngine:
 		try:
 			self._initialize()
 
-			self._main_loop()
+			# kivy が run から処理を離してくれない
+			# Clock.schedule_interval は Unity などと多分一緒で、処理が重くなるとフレームがスキップされる可能性があるため
+			# GILの仕組み上マルチスレッドにしてもコルーチンと変わらないと思うけど run() が yeild形式なのでやむなし
+			with concurrent.futures.ThreadPoolExecutor() as executor:
+				_ = list(executor.map(
+					lambda i: (self._main_loop if i else self._kivy_loop)(),
+					list(range(2))
+					))
 		except KeyboardInterrupt:
-			pass
+			App.get_running_app().stop()
+			self.kivy_app = None
 		except Exception as e:
 			self._dump(e)
 		finally:
@@ -1675,11 +1904,46 @@ if __name__ == '__main__':
 			return os.path.join(sys._MEIPASS, filename)
 		return os.path.join(filename)
 
+	# kivy への独自イベントの on_update を処理してもらうモンキーパッチ
+	def add_on_update_all():
+		class_list = dict(Factory.classes)
+		loaded_module = set(sys.modules)
+		for class_name, item in class_list.items():
+			cls = item['cls']
+			# 下記のものを import/unimport したら (Factory から warning がでる) or (window の再ロードが起きる)
+			if (cls is None and not (
+					'Action' in class_name or 'Svg' in class_name or 'DropDown' in class_name or
+					'Settings' in class_name or 'Spinner' in class_name or 'RstDocument' in class_name
+				)):
+				if (item['module']):
+					module = __import__(
+						name=item['module'],
+						fromlist='*',
+						level=0  # force absolute
+					)
+					if ( hasattr(module, class_name) ):
+						cls = getattr(module, class_name)
+
+					if (not cls is None):
+						if ( hasattr(cls, '__events__') or re.search(r'[\w]+Layout$', class_name) ):
+							cls = Factory.get(class_name)
+							curse(cls, 'on_update', lambda *args, **kwargs: True)
+
+							cls.__events__ += ('on_update',)
+
+					# 適宜 unimport していかないと、メモリかなんかで python がデッドロックになる
+					for module_name in list( set(sys.modules) - loaded_module ):
+						sys.modules.pop(module_name)
+	add_on_update_all()
+
 	# strさん にお猿さんの呪いの実で +単項演算子 で パッケージ?コンパイル済みリソース? へのアクセスを処理してもらうようにする
 	curse(str, '__pos__', _resource)
 
 	# exe にした時に multi process だと exe 自体を新しく起動しようとするバグ回避
 	multiprocessing.freeze_support()
+
+	# 重い処理の途中で ctrl+c できるように
+	signal.signal(signal.SIGINT, signal.SIG_DFL)
 
 	# main engine
 	engine = SmaBroEngine()

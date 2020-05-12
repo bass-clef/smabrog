@@ -3,10 +3,10 @@
         "capture": {
             "title": "",
             "title_back": "MonsterX U3.0R",
-            "width": 640,
-            "height": 360,
-            "x": 40,
-            "y": 692
+            "width": 672,
+            "height": 378,
+            "x": 21,
+            "y": 690
         },
         "log": {
             "headers": {
@@ -17,7 +17,7 @@
             "path_back": "https://httpbin.org/post"
         },
         "option": {
-            "max_workers": 6,
+            "max_workers": 8,
             "battle_information": {
                 "caption": "battle_information",
                 "back": [
@@ -35,12 +35,12 @@
                     175,
                     100
                 ],
-                "cui_text": "\r<{group_name}> {player_info}",
+                "cui_text": "\r({ratio}){frame} <{group_name}> {player_info}",
                 "gui": {
                     "height": 360,
                     "width": 640
                 },
-                "gui_text": " {streak} {streak_name}\n{streak_ratio[0][length]}戦中 勝:{streak_ratio[0][win]}% 負:{streak_ratio[0][lose]}%                    ({ratio}){frame}",
+                "gui_text": "",
                 "pos": [
                     0,
                     320
@@ -58,11 +58,47 @@
             ],
             "online_rule": true,
             "exit_not_found_capture": false,
-            "find_capture_area": true,
+            "find_capture_area": false,
             "found_capture_area_fixed": false,
-            "every_time_find_capture_area": true
+            "every_time_find_capture_area": false
         },
         "resource": {
+            "kivy": {
+                "fps": 5,
+                "path": "gui.kv",
+                "title": "battle_information",
+                "pos": [
+                    0,
+                    10
+                ],
+                "option": [
+                    [
+                        "graphics",
+                        "position",
+                        "custom"
+                    ],
+                    [
+                        "graphics",
+                        "width",
+                        640
+                    ],
+                    [
+                        "graphics",
+                        "height",
+                        360
+                    ],
+                    [
+                        "graphics",
+                        "resizable",
+                        false
+                    ],
+                    [
+                        "kivy",
+                        "exit_on_escape",
+                        "0"
+                    ]
+                ]
+            },
             "font": {
                 "normal": [
                     "C:/Windows/Fonts/msgothic.ttc",
