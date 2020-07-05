@@ -3,10 +3,10 @@
         "capture": {
             "title": "",
             "title_back": "MonsterX U3.0R",
-            "width": 672,
-            "height": 378,
-            "x": 21,
-            "y": 690
+            "width": 1280,
+            "height": 720,
+            "x": 574,
+            "y": 268
         },
         "log": {
             "headers": {
@@ -58,9 +58,9 @@
             ],
             "online_rule": true,
             "exit_not_found_capture": false,
-            "find_capture_area": false,
+            "find_capture_area": true,
             "found_capture_area_fixed": false,
-            "every_time_find_capture_area": false
+            "every_time_find_capture_area": true
         },
         "resource": {
             "kivy": {
@@ -155,6 +155,7 @@
                 "MIIBRAWLER": "Miiブラウラー",
                 "MIIGUNNER": "Miiガンナー",
                 "MIISWORDFIGHTER": "Miiソードファイター",
+                "MINMIN": "ミェンミェン",
                 "MRGAMEWATCH": "Mr.ゲーム&ウォッチ",
                 "MURABITO": "むらびと",
                 "NESS": "ネス",
