@@ -9,7 +9,7 @@ smabrog
 
 ## Usage
 - 忙しい人向け
-    - 最新の smabrog.zip を [ここから](https://drive.google.com/drive/folders/1-IiiCSpREpDFTm-W0emJHehfb0Fduit4?usp=sharing) DL,解凍して
+    - 最新の smabrog.zip を [ここから](https://github.com/bass-clef/smabrog/releases/) DL,解凍して
     - スイッチ、スマブラ、キャプチャソフトをつけて smabrog/smabrog.exe を実行
 
 - 導入の方法
@@ -160,5 +160,5 @@ smabrog
     GUIの処理をkivyに少し移譲しました(グラフの描画で不安定です ver 0.8.2)
 - 2020/7/5
     メェンメェンを追加しました
-
-
+- 2021/3/8
+    スティーブ,アレックス,エンダーマン,ゾンビ,セフィロス,ホムラ,ヒカリを追加しました。
